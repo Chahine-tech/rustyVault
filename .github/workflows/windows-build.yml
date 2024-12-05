@@ -1,0 +1,44 @@
+name: Windows Build
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Display Windows version
+        run: |
+          systeminfo | findstr /B /C:"OS Name" /C:"OS Version"
+          wmic qfe list brief
+
+      - name: Display supported cryptographic algorithms
+        run: |
+          certutil -v -store my
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+          override: true
+
+      - name: Setup MSVC target
+        run: rustup target add x86_64-pc-windows-msvc
+
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Run all tests
+        env:
+          RUST_BACKTRACE: full
+        run: cargo test --target x86_64-pc-windows-msvc --all -- --nocapture
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: windows-ssh-agent
+          path: target/x86_64-pc-windows-msvc/release/agent.exe
