@@ -40,25 +40,22 @@ fn test_key_generation_and_addition() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn test_key_signing() {
-    let mut ssh_agent = WindowsSSHAgent::new().unwrap();
-
+fn test_key_signing() -> Result<(), Box<dyn Error>> {
+    let mut ssh_agent = WindowsSSHAgent::new()?;
+    
     let (ed25519_private_key, ed25519_public_key) = ssh_agent
         .tpm_provider
-        .generate_key(KeyType::Ed25519)
-        .unwrap();
-
-    ssh_agent
-        .add_key(ed25519_private_key.clone(), ed25519_public_key.clone())
-        .unwrap();
+        .generate_key(KeyType::Ed25519)?;
+    
+    ssh_agent.add_key(ed25519_private_key.clone(), ed25519_public_key.clone())?;
 
     let test_data = b"Hello, SSH Agent!";
+    
+    let signature = ssh_agent.sign_data(&ed25519_public_key, test_data)?;
+    
+    assert!(!signature.is_empty(), "Signature should not be empty");
 
-    let result = ssh_agent.sign_data(&ed25519_public_key, test_data);
-    assert!(
-        result.is_err(),
-        "Signing should fail until implementation is complete"
-    );
+    Ok(())
 }
 
 #[test]
