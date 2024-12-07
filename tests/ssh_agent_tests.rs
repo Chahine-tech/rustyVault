@@ -1,9 +1,12 @@
 use std::error::Error;
-use windows_ssh_agent::{KeyType, WindowsSSHAgent};
+use windows_ssh_agent::{KeyType, WindowsSSHAgent, MockTPMProvider};
 
 #[test]
 fn test_windows_ssh_agent_creation() -> Result<(), Box<dyn Error>> {
-    let ssh_agent = WindowsSSHAgent::new()?;
+    let ssh_agent = WindowsSSHAgent {
+        tpm_provider: Box::new(MockTPMProvider),
+        keys: Vec::new(),
+    };
     assert_eq!(
         ssh_agent.key_count(),
         0,
@@ -14,7 +17,10 @@ fn test_windows_ssh_agent_creation() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn test_key_generation_and_addition() -> Result<(), Box<dyn Error>> {
-    let mut ssh_agent = WindowsSSHAgent::new()?;
+    let mut ssh_agent = WindowsSSHAgent {
+        tpm_provider: Box::new(MockTPMProvider),
+        keys: Vec::new(),
+    };
 
     let (rsa_private_key, rsa_public_key) =
         ssh_agent.tpm_provider.generate_key(KeyType::Rsa2048)?;
@@ -41,7 +47,10 @@ fn test_key_generation_and_addition() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn test_key_signing() -> Result<(), Box<dyn Error>> {
-    let mut ssh_agent = WindowsSSHAgent::new()?;
+    let mut ssh_agent = WindowsSSHAgent {
+        tpm_provider: Box::new(MockTPMProvider),
+        keys: Vec::new(),
+    };
     
     let (ed25519_private_key, ed25519_public_key) = ssh_agent
         .tpm_provider
@@ -59,12 +68,17 @@ fn test_key_signing() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn test_sign_with_nonexistent_key() {
-    let ssh_agent = WindowsSSHAgent::new().unwrap();
+fn test_sign_with_nonexistent_key() -> Result<(), Box<dyn Error>> {
+    let ssh_agent = WindowsSSHAgent {
+        tpm_provider: Box::new(MockTPMProvider),
+        keys: Vec::new(),
+    };
 
     let test_data = b"Test signing";
     let fake_public_key = vec![0, 1, 2, 3];
 
     let result = ssh_agent.sign_data(&fake_public_key, test_data);
     assert!(result.is_err(), "Signing with non-existent key should fail");
+
+    Ok(())
 }

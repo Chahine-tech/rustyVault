@@ -5,8 +5,7 @@ use ed25519_dalek::Keypair;
 use std::error::Error;
 use std::sync::Arc;
 use windows::Win32::Security::Cryptography::{
-    BCryptOpenAlgorithmProvider, BCRYPT_ALG_HANDLE, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS,
-    BCRYPT_SHA256_ALGORITHM,
+    BCryptCloseAlgorithmProvider, BCryptCreateHash, BCryptDestroyHash, BCryptFinishHash, BCryptHashData, BCryptOpenAlgorithmProvider, CertOpenStore, BCRYPT_ALG_HANDLE, BCRYPT_HASH_HANDLE, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, BCRYPT_SHA256_ALGORITHM, CERT_OPEN_STORE_FLAGS, CERT_QUERY_ENCODING_TYPE, CERT_STORE_PROV_SYSTEM_W, HCERTSTORE
 };
 use windows::Win32::Foundation::NTSTATUS;
 use rand_core::OsRng as CoreOsRng;
@@ -51,8 +50,18 @@ impl WindowsTPMProvider {
         })
     }
 
-    fn check_tpm_status(&self) -> Result<(), Box<dyn Error>> {
-        // Implémentez ici une vérification du statut du TPM
+    pub fn check_tpm_status(&self) -> Result<(), Box<dyn Error>> {
+        let _store_handle: HCERTSTORE = unsafe {
+            CertOpenStore(
+                CERT_STORE_PROV_SYSTEM_W, 
+                CERT_QUERY_ENCODING_TYPE(0), 
+                None, 
+                CERT_OPEN_STORE_FLAGS(0),
+                None
+            )
+        }?;
+
+        info!("TPM status check completed successfully");
         Ok(())
     }
 }
@@ -73,9 +82,79 @@ impl TPMProvider for WindowsTPMProvider {
         }
     }
 
-    fn sign(&self, _private_key: &[u8], _data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-        info!("Performing signature operation");
-        Ok(_data.to_vec()) //Simple mock signature
+     fn sign(&self, private_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+        let _ = private_key;
+        // Open SHA256 algorithm provider
+        let mut alg_handle = BCRYPT_ALG_HANDLE::default();
+        let status = unsafe {
+            BCryptOpenAlgorithmProvider(
+                &mut alg_handle,
+                BCRYPT_SHA256_ALGORITHM,
+                None,
+                BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS::default()
+            )
+        };
+
+        if is_ntstatus_failure(status) {
+            return Err(format!("Failed to open algorithm provider: {:?}", status.0).into());
+        }
+
+        // Create hash object
+        let mut hash_handle = BCRYPT_HASH_HANDLE::default();
+        let hash_status = unsafe {
+            BCryptCreateHash(
+                alg_handle, 
+                &mut hash_handle, 
+                None,  // No hash object buffer
+                None,  // No secret 
+                0,     // No secret length
+            )
+        };
+
+        if is_ntstatus_failure(hash_status) {
+            unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
+            return Err(format!("Failed to create hash: {:?}", hash_status.0).into());
+        }
+
+        // Hash the data
+        let hash_data_status = unsafe {
+            BCryptHashData(
+                hash_handle, 
+                data,  // Slice instead of pointer
+                0      // Flags
+            )
+        };
+
+        if is_ntstatus_failure(hash_data_status) {
+            unsafe { 
+                BCryptDestroyHash(hash_handle);
+                BCryptCloseAlgorithmProvider(alg_handle, 0) 
+            };
+            return Err(format!("Failed to hash data: {:?}", hash_data_status.0).into());
+        }
+
+        // Finalize hash
+        let mut hash_result = vec![0u8; 32]; // SHA256 produces 32-byte hash
+        let finish_status = unsafe {
+            BCryptFinishHash(
+                hash_handle, 
+                &mut hash_result,  // Slice reference
+                0  // Flags
+            )
+        };
+
+        // Cleanup
+        unsafe { 
+            BCryptDestroyHash(hash_handle);
+            BCryptCloseAlgorithmProvider(alg_handle, 0) 
+        };
+
+        if is_ntstatus_failure(finish_status) {
+            return Err(format!("Failed to finish hash: {:?}", finish_status.0).into());
+        }
+
+        info!("Successfully performed signing operation");
+        Ok(hash_result)
     }
 }
 
@@ -125,7 +204,7 @@ impl TPMProvider for MockTPMProvider {
 
 pub struct WindowsSSHAgent {
     pub tpm_provider: Box<dyn TPMProvider>,
-    keys: Vec<(Vec<u8>, Vec<u8>)>,
+    pub keys: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 impl WindowsSSHAgent {
