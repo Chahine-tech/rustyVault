@@ -204,7 +204,7 @@ impl TPMProvider for MockTPMProvider {
 
 pub struct WindowsSSHAgent {
     pub tpm_provider: Box<dyn TPMProvider>,
-    keys: Vec<(Vec<u8>, Vec<u8>)>,
+    pub keys: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 impl WindowsSSHAgent {
