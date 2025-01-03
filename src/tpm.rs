@@ -10,7 +10,7 @@ use windows::Win32::Security::Cryptography::{
 };
 use windows::Win32::Foundation::NTSTATUS;
 use rand_core::OsRng as CoreOsRng;
-use crate::key_store::{KeyStore, KeyStoreError, KeyInfo};
+use crate::key_store::{KeyStore, KeyInfo};
 use rand::RngCore;
 use std::sync::Mutex;
 

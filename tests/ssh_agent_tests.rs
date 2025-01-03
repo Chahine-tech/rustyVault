@@ -1,5 +1,5 @@
 use std::error::Error;
-use windows_ssh_agent::{KeyType, WindowsSSHAgent, KeyStore};
+use windows_ssh_agent::{KeyType, WindowsSSHAgent};
 mod test_utils;
 use test_utils::{create_test_agent, create_test_key_store, create_test_provider};
 
@@ -91,10 +91,21 @@ fn test_key_removal() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn test_key_expiration() -> Result<(), Box<dyn Error>> {
-    let tpm_provider = create_test_provider();
-    let (private_key, public_key) = tpm_provider.generate_key(KeyType::Ed25519)?;
+    let mut ssh_agent = create_test_agent()?;
+    let (private_key, public_key) = ssh_agent.tpm_provider.generate_key(KeyType::Ed25519)?;
     
     // Add a key with 0 TTL (immediate expiration)
+    ssh_agent.add_key(private_key, public_key)?;
+    
+    // Sleep briefly to ensure the key expires
+    std::thread::sleep(std::time::Duration::from_millis(1));
+    
+    let cleaned = ssh_agent.cleanup_expired_keys();
+    assert_eq!(cleaned, 0, "No keys should be cleaned up yet");
+    assert_eq!(ssh_agent.list_keys().len(), 1, "Key should still exist");
+    
+    // Now add a key with immediate expiration
+    let (private_key, public_key) = ssh_agent.tpm_provider.generate_key(KeyType::Ed25519)?;
     let mut key_store = create_test_key_store();
     key_store.add_key(
         "test_key".to_string(),
@@ -102,10 +113,10 @@ fn test_key_expiration() -> Result<(), Box<dyn Error>> {
         private_key,
         public_key,
         None,
-        Some(0),
+        Some(0), // Immediate expiration
     )?;
     
-    let mut ssh_agent = WindowsSSHAgent::new_test(tpm_provider, key_store);
+    let mut ssh_agent = WindowsSSHAgent::new_test(create_test_provider(), key_store);
     let cleaned = ssh_agent.cleanup_expired_keys();
     assert_eq!(cleaned, 1, "One key should have been cleaned up");
     assert_eq!(ssh_agent.list_keys().len(), 0, "No keys should remain after cleanup");

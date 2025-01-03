@@ -1,5 +1,5 @@
 use std::error::Error;
-use windows_ssh_agent::{KeyStore, KeyType, MockTPMProvider, TPMProvider, WindowsSSHAgent};
+use windows_ssh_agent::{KeyStore, MockTPMProvider, TPMProvider, WindowsSSHAgent};
 
 pub fn create_test_agent() -> Result<WindowsSSHAgent, Box<dyn Error>> {
     let tpm_provider = Box::new(MockTPMProvider);
