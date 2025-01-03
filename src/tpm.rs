@@ -4,11 +4,15 @@ use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey};
 use ed25519_dalek::Keypair;
 use std::error::Error;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use windows::Win32::Security::Cryptography::{
     BCryptCloseAlgorithmProvider, BCryptCreateHash, BCryptDestroyHash, BCryptFinishHash, BCryptHashData, BCryptOpenAlgorithmProvider, CertOpenStore, BCRYPT_ALG_HANDLE, BCRYPT_HASH_HANDLE, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, BCRYPT_SHA256_ALGORITHM, CERT_OPEN_STORE_FLAGS, CERT_QUERY_ENCODING_TYPE, CERT_STORE_PROV_SYSTEM_W, HCERTSTORE
 };
 use windows::Win32::Foundation::NTSTATUS;
 use rand_core::OsRng as CoreOsRng;
+use crate::key_store::{KeyStore, KeyStoreError, KeyInfo};
+use rand::RngCore;
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, Copy)]
 pub enum KeyType {
@@ -17,7 +21,7 @@ pub enum KeyType {
     Ed25519,
 }
 
-pub trait TPMProvider {
+pub trait TPMProvider: Send + Sync {
     fn initialize(&self) -> Result<(), Box<dyn Error>>;
     fn generate_key(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>;
     fn sign(&self, private_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>>;
@@ -28,7 +32,7 @@ fn is_ntstatus_failure(status: NTSTATUS) -> bool {
 }
 
 pub struct WindowsTPMProvider {
-    _context: Arc<BCRYPT_ALG_HANDLE>,
+    _context: Arc<Mutex<BCRYPT_ALG_HANDLE>>,
 }
 
 impl WindowsTPMProvider {
@@ -46,7 +50,7 @@ impl WindowsTPMProvider {
             return Err(format!("BCryptOpenAlgorithmProvider failed with status: {:?}", status.0).into());
         }
         Ok(Self {
-            _context: Arc::new(provider),
+            _context: Arc::new(Mutex::new(provider)),
         })
     }
 
@@ -65,6 +69,9 @@ impl WindowsTPMProvider {
         Ok(())
     }
 }
+
+unsafe impl Send for WindowsTPMProvider {}
+unsafe impl Sync for WindowsTPMProvider {}
 
 impl TPMProvider for WindowsTPMProvider {
     fn initialize(&self) -> Result<(), Box<dyn Error>> {
@@ -204,41 +211,86 @@ impl TPMProvider for MockTPMProvider {
 
 pub struct WindowsSSHAgent {
     pub tpm_provider: Box<dyn TPMProvider>,
-    pub keys: Vec<(Vec<u8>, Vec<u8>)>,
+    #[cfg(test)]
+    pub key_store: KeyStore,
+    #[cfg(not(test))]
+    key_store: KeyStore,
 }
 
 impl WindowsSSHAgent {
     pub fn new() -> Result<Self, Box<dyn Error>> {
         let tpm_provider = Box::new(WindowsTPMProvider::new()?);
         tpm_provider.initialize()?;
+
+        // Generate a random master key for the key store
+        let mut master_key = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut master_key);
+        
         Ok(Self {
             tpm_provider,
-            keys: Vec::new(),
+            #[cfg(test)]
+            key_store: KeyStore::new(&master_key),
+            #[cfg(not(test))]
+            key_store: KeyStore::new(&master_key),
         })
     }
 
-    pub fn add_key(&mut self, private_key: Vec<u8>, public_key: Vec<u8>) -> Result<(), Box<dyn Error>> {
-        info!("Adding private key");
-        self.keys.push((private_key, public_key));
-        info!("Successfully added private key");
+    /// Constructor for testing purposes
+    #[doc(hidden)]
+    pub fn new_test(tpm_provider: Box<dyn TPMProvider>, key_store: KeyStore) -> Self {
+        Self {
+            tpm_provider,
+            key_store,
+        }
+    }
+
+    pub fn add_key(
+        &mut self,
+        private_key: Vec<u8>,
+        public_key: Vec<u8>,
+    ) -> Result<(), Box<dyn Error>> {
+        // Generate a unique key ID
+        let key_id = format!("key_{}", SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros());
+        
+        self.key_store.add_key(
+            key_id,
+            "ssh-key".to_string(),
+            private_key,
+            public_key,
+            None,
+            None,
+        )?;
+        
         Ok(())
     }
 
+    pub fn remove_key(&mut self, key_id: &str) -> Result<(), Box<dyn Error>> {
+        self.key_store.remove_key(key_id)?;
+        Ok(())
+    }
+
+    pub fn list_keys(&self) -> Vec<KeyInfo> {
+        self.key_store.list_keys()
+    }
+
     pub fn sign_data(
-        &self,
+        &mut self,
         public_key: &[u8],
         data: &[u8],
     ) -> Result<Vec<u8>, Box<dyn Error>> {
-        for (private_key, key_public) in &self.keys {
-            if key_public == public_key {
-                return self.tpm_provider.sign(private_key, data);
+        // Find the key by its public key
+        for key_info in self.list_keys() {
+            if let Ok((private_key, stored_public_key)) = self.key_store.get_key(&key_info.key_id) {
+                if stored_public_key == public_key {
+                    return self.tpm_provider.sign(&private_key, data);
+                }
             }
         }
         Err("No matching key found".into())
     }
 
-    pub fn key_count(&self) -> usize {
-        self.keys.len()
+    pub fn cleanup_expired_keys(&mut self) -> usize {
+        self.key_store.cleanup_expired()
     }
 }
 
