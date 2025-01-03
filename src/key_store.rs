@@ -7,7 +7,6 @@ use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    error::Error,
     time::{SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;

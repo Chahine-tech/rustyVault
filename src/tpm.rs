@@ -258,7 +258,28 @@ impl WindowsSSHAgent {
             private_key,
             public_key,
             None,
+            None, // No expiration by default
+        )?;
+        
+        Ok(())
+    }
+
+    pub fn add_key_with_ttl(
+        &mut self,
+        private_key: Vec<u8>,
+        public_key: Vec<u8>,
+        ttl_seconds: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        // Generate a unique key ID
+        let key_id = format!("key_{}", SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros());
+        
+        self.key_store.add_key(
+            key_id,
+            "ssh-key".to_string(),
+            private_key,
+            public_key,
             None,
+            Some(ttl_seconds),
         )?;
         
         Ok(())
