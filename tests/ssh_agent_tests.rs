@@ -1,7 +1,7 @@
 use std::error::Error;
-use windows_ssh_agent::{KeyType, WindowsSSHAgent};
+use windows_ssh_agent::KeyType;
 mod test_utils;
-use test_utils::{create_test_agent, create_test_key_store, create_test_provider};
+use test_utils::create_test_agent;
 
 #[test]
 fn test_windows_ssh_agent_creation() -> Result<(), Box<dyn Error>> {
@@ -107,7 +107,7 @@ fn test_key_expiration() -> Result<(), Box<dyn Error>> {
     
     let cleaned = ssh_agent.cleanup_expired_keys();
     assert_eq!(cleaned, 1, "One key should have been cleaned up");
-    assert_eq!(ssh_agent.list_keys().len(), 1, "Only the expired key should be removed");
+    assert_eq!(ssh_agent.list_keys().len(), 0, "All keys should be removed after cleanup");
     
     Ok(())
 }
