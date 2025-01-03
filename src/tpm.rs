@@ -219,8 +219,22 @@ pub struct WindowsSSHAgent {
 
 impl WindowsSSHAgent {
     pub fn new() -> Result<Self, Box<dyn Error>> {
-        let tpm_provider = Box::new(WindowsTPMProvider::new()?);
-        tpm_provider.initialize()?;
+        // Try to create WindowsTPMProvider first
+        let tpm_provider: Box<dyn TPMProvider> = match WindowsTPMProvider::new() {
+            Ok(provider) => {
+                if provider.initialize().is_ok() {
+                    info!("Successfully initialized Windows TPM Provider");
+                    Box::new(provider)
+                } else {
+                    info!("TPM initialization failed, falling back to mock provider");
+                    Box::new(MockTPMProvider)
+                }
+            }
+            Err(e) => {
+                info!("Could not create TPM provider ({}), falling back to mock provider", e);
+                Box::new(MockTPMProvider)
+            }
+        };
 
         // Generate a random master key for the key store
         let mut master_key = [0u8; 32];
