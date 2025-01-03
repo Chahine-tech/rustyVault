@@ -178,7 +178,7 @@ impl KeyStore {
         let expired: Vec<String> = self
             .keys
             .iter()
-            .filter(|(_, k)| k.expires_at.map_or(false, |exp| now > exp))
+            .filter(|(_, k)| k.expires_at.map_or(false, |exp| now >= exp))
             .map(|(id, _)| id.clone())
             .collect();
 

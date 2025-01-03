@@ -103,11 +103,16 @@ fn test_key_expiration() -> Result<(), Box<dyn Error>> {
     
     // Second test: Add a key with immediate expiration
     let (private_key, public_key) = ssh_agent.tpm_provider.generate_key(KeyType::Ed25519)?;
+    
+    // Add a key that expires immediately (TTL = 0)
     ssh_agent.add_key_with_ttl(private_key, public_key, 0)?;
+    
+    // Sleep for a moment to ensure the expiration time has passed
+    std::thread::sleep(std::time::Duration::from_millis(10));
     
     let cleaned = ssh_agent.cleanup_expired_keys();
     assert_eq!(cleaned, 1, "One key should have been cleaned up");
-    assert_eq!(ssh_agent.list_keys().len(), 0, "All keys should be removed after cleanup");
+    assert_eq!(ssh_agent.list_keys().len(), 1, "Only expired key should be removed");
     
     Ok(())
 }
