@@ -10,7 +10,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         .filter_level(log::LevelFilter::Info)
         .init();
 
-    let mut ssh_agent = WindowsSSHAgent::new()?;
+    info!("Starting SSH Agent...");
+    let mut ssh_agent = match WindowsSSHAgent::new() {
+        Ok(agent) => agent,
+        Err(e) => {
+            error!("Failed to create SSH agent: {}", e);
+            return Err(e);
+        }
+    };
 
     info!("Generating RSA 2048 private key...");
     let (rsa_private_key, rsa_public_key) = ssh_agent
