@@ -1,5 +1,8 @@
 use log::{error, info};
 use std::error::Error;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 use windows_ssh_agent::{KeyType, SSHAgentServer, WindowsSSHAgent};
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -33,10 +36,46 @@ fn main() -> Result<(), Box<dyn Error>> {
     info!("Adding Ed25519 key...");
     ssh_agent.add_key(ed25519_private_key, ed25519_public_key)?;
 
-    let mut server = SSHAgentServer { agent: ssh_agent };
+    // List all keys
+    info!("Current keys in store:");
+    for key in ssh_agent.list_keys() {
+        info!(
+            "Key ID: {}, Type: {}, Created: {}, Last Used: {}",
+            key.key_id, key.key_type, key.created_at, key.last_used
+        );
+    }
+
+    let server = Arc::new(Mutex::new(SSHAgentServer { agent: ssh_agent }));
+    let cleanup_server = Arc::clone(&server);
+
+    // Start a background thread for key cleanup
+    thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_secs(3600)); // Check every hour
+            if let Err(e) = std::panic::catch_unwind(|| {
+                if let Ok(mut server) = cleanup_server.lock() {
+                    let cleaned = server.agent.cleanup_expired_keys();
+                    if cleaned > 0 {
+                        info!("Cleaned up {} expired keys", cleaned);
+                    }
+                }
+            }) {
+                error!("Error in cleanup thread: {:?}", e);
+            }
+        }
+    });
 
     info!("Starting SSH agent server...");
-    server.start()?;
+    match server.lock() {
+        Ok(mut server) => server.start()?,
+        Err(e) => {
+            error!("Failed to acquire lock for server: {:?}", e);
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to start server",
+            )));
+        }
+    }
 
     info!("SSH Agent initialization complete");
 
