@@ -1,5 +1,5 @@
 use crate::key_store::{KeyInfo, KeyStore};
-use ed25519_dalek::Keypair;
+use ed25519_dalek::SigningKey;
 use log::{error, info};
 use rand::RngCore;
 use rand_core::OsRng as CoreOsRng;
@@ -195,9 +195,12 @@ fn generate_rsa_key(bits: usize) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
 fn generate_ed25519_key() -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
     info!("Attempting to generate Ed25519 key");
     let mut rng = CoreOsRng;
-    let keypair: Keypair = Keypair::generate(&mut rng);
-    let private_key_bytes = keypair.secret.to_bytes().to_vec();
-    let public_key_bytes = keypair.public.to_bytes().to_vec();
+    let mut ed25519_seed = [0u8; 32];
+    rng.fill_bytes(&mut ed25519_seed);
+    let signing_key = SigningKey::from_bytes(&ed25519_seed);
+    let verifying_key = signing_key.verifying_key();
+    let private_key_bytes = signing_key.to_bytes().to_vec();
+    let public_key_bytes = verifying_key.to_bytes().to_vec();
     info!("Successfully generated Ed25519 key");
     Ok((private_key_bytes, public_key_bytes))
 }
