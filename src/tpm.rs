@@ -186,8 +186,8 @@ fn generate_rsa_key(bits: usize) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
     let mut rng = rand::thread_rng();
     let private_key = RsaPrivateKey::new(&mut rng, bits)?;
     let public_key = RsaPublicKey::from(&private_key);
-    let private_key_bytes = private_key.to_pkcs1_der()?.as_ref().to_vec();
-    let public_key_bytes = public_key.to_pkcs1_der()?.as_ref().to_vec();
+    let private_key_bytes = private_key.to_pkcs1_der().unwrap().as_bytes().to_vec();
+    let public_key_bytes = public_key.to_pkcs1_der().unwrap().as_bytes().to_vec();
     info!("Successfully generated RSA {} key", bits);
     Ok((private_key_bytes, public_key_bytes))
 }
