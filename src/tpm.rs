@@ -1,18 +1,21 @@
-use log::info;
-use rsa::{RsaPrivateKey, RsaPublicKey};
+use crate::key_store::{KeyInfo, KeyStore};
+use ed25519_dalek::SigningKey;
+use log::{error, info};
+use rand::RngCore;
+use rand_core::OsRng as CoreOsRng;
 use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey};
-use ed25519_dalek::Keypair;
+use rsa::{RsaPrivateKey, RsaPublicKey};
 use std::error::Error;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use windows::Win32::Security::Cryptography::{
-    BCryptCloseAlgorithmProvider, BCryptCreateHash, BCryptDestroyHash, BCryptFinishHash, BCryptHashData, BCryptOpenAlgorithmProvider, CertOpenStore, BCRYPT_ALG_HANDLE, BCRYPT_HASH_HANDLE, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, BCRYPT_SHA256_ALGORITHM, CERT_OPEN_STORE_FLAGS, CERT_QUERY_ENCODING_TYPE, CERT_STORE_PROV_SYSTEM_W, HCERTSTORE
-};
-use windows::Win32::Foundation::NTSTATUS;
-use rand_core::OsRng as CoreOsRng;
-use crate::key_store::{KeyStore, KeyInfo};
-use rand::RngCore;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+use windows::Win32::Foundation::NTSTATUS;
+use windows::Win32::Security::Cryptography::{
+    BCryptCloseAlgorithmProvider, BCryptCreateHash, BCryptDestroyHash, BCryptFinishHash,
+    BCryptHashData, BCryptOpenAlgorithmProvider, CertOpenStore, BCRYPT_ALG_HANDLE,
+    BCRYPT_HASH_HANDLE, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, BCRYPT_SHA256_ALGORITHM,
+    CERT_OPEN_STORE_FLAGS, CERT_QUERY_ENCODING_TYPE, CERT_STORE_PROV_SYSTEM_W, HCERTSTORE,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub enum KeyType {
@@ -37,6 +40,7 @@ pub struct WindowsTPMProvider {
 
 impl WindowsTPMProvider {
     pub fn new() -> Result<Self, Box<dyn Error>> {
+        info!("Attempting to create Windows TPM Provider");
         let mut provider = BCRYPT_ALG_HANDLE::default();
         let status = unsafe {
             BCryptOpenAlgorithmProvider(
@@ -47,23 +51,35 @@ impl WindowsTPMProvider {
             )
         };
         if is_ntstatus_failure(status) {
-            return Err(format!("BCryptOpenAlgorithmProvider failed with status: {:?}", status.0).into());
+            let error_msg = format!(
+                "BCryptOpenAlgorithmProvider failed with status: {:?}",
+                status.0
+            );
+            error!("{}", error_msg);
+            return Err(error_msg.into());
         }
+        info!("Successfully created BCrypt Algorithm Provider");
         Ok(Self {
             _context: Arc::new(Mutex::new(provider)),
         })
     }
 
     pub fn check_tpm_status(&self) -> Result<(), Box<dyn Error>> {
+        info!("Checking TPM status...");
         let _store_handle: HCERTSTORE = unsafe {
             CertOpenStore(
-                CERT_STORE_PROV_SYSTEM_W, 
-                CERT_QUERY_ENCODING_TYPE(0), 
-                None, 
+                CERT_STORE_PROV_SYSTEM_W,
+                CERT_QUERY_ENCODING_TYPE(0),
+                None,
                 CERT_OPEN_STORE_FLAGS(0),
-                None
+                None,
             )
-        }?;
+        }
+        .map_err(|e| {
+            let error_msg = format!("Failed to open certificate store: {:?}", e);
+            error!("{}", error_msg);
+            e
+        })?;
 
         info!("TPM status check completed successfully");
         Ok(())
@@ -89,7 +105,7 @@ impl TPMProvider for WindowsTPMProvider {
         }
     }
 
-     fn sign(&self, private_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    fn sign(&self, private_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
         let _ = private_key;
         // Open SHA256 algorithm provider
         let mut alg_handle = BCRYPT_ALG_HANDLE::default();
@@ -98,7 +114,7 @@ impl TPMProvider for WindowsTPMProvider {
                 &mut alg_handle,
                 BCRYPT_SHA256_ALGORITHM,
                 None,
-                BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS::default()
+                BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS::default(),
             )
         };
 
@@ -110,11 +126,11 @@ impl TPMProvider for WindowsTPMProvider {
         let mut hash_handle = BCRYPT_HASH_HANDLE::default();
         let hash_status = unsafe {
             BCryptCreateHash(
-                alg_handle, 
-                &mut hash_handle, 
-                None,  // No hash object buffer
-                None,  // No secret 
-                0,     // No secret length
+                alg_handle,
+                &mut hash_handle,
+                None, // No hash object buffer
+                None, // No secret
+                0,    // No secret length
             )
         };
 
@@ -126,16 +142,16 @@ impl TPMProvider for WindowsTPMProvider {
         // Hash the data
         let hash_data_status = unsafe {
             BCryptHashData(
-                hash_handle, 
-                data,  // Slice instead of pointer
-                0      // Flags
+                hash_handle,
+                data, // Slice instead of pointer
+                0,    // Flags
             )
         };
 
         if is_ntstatus_failure(hash_data_status) {
-            unsafe { 
+            unsafe {
                 BCryptDestroyHash(hash_handle);
-                BCryptCloseAlgorithmProvider(alg_handle, 0) 
+                BCryptCloseAlgorithmProvider(alg_handle, 0)
             };
             return Err(format!("Failed to hash data: {:?}", hash_data_status.0).into());
         }
@@ -144,16 +160,16 @@ impl TPMProvider for WindowsTPMProvider {
         let mut hash_result = vec![0u8; 32]; // SHA256 produces 32-byte hash
         let finish_status = unsafe {
             BCryptFinishHash(
-                hash_handle, 
-                &mut hash_result,  // Slice reference
-                0  // Flags
+                hash_handle,
+                &mut hash_result, // Slice reference
+                0,                // Flags
             )
         };
 
         // Cleanup
-        unsafe { 
+        unsafe {
             BCryptDestroyHash(hash_handle);
-            BCryptCloseAlgorithmProvider(alg_handle, 0) 
+            BCryptCloseAlgorithmProvider(alg_handle, 0)
         };
 
         if is_ntstatus_failure(finish_status) {
@@ -170,8 +186,8 @@ fn generate_rsa_key(bits: usize) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
     let mut rng = rand::thread_rng();
     let private_key = RsaPrivateKey::new(&mut rng, bits)?;
     let public_key = RsaPublicKey::from(&private_key);
-    let private_key_bytes = private_key.to_pkcs1_der()?.as_ref().to_vec();
-    let public_key_bytes = public_key.to_pkcs1_der()?.as_ref().to_vec();
+    let private_key_bytes = private_key.to_pkcs1_der().unwrap().as_bytes().to_vec();
+    let public_key_bytes = public_key.to_pkcs1_der().unwrap().as_bytes().to_vec();
     info!("Successfully generated RSA {} key", bits);
     Ok((private_key_bytes, public_key_bytes))
 }
@@ -179,13 +195,15 @@ fn generate_rsa_key(bits: usize) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
 fn generate_ed25519_key() -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
     info!("Attempting to generate Ed25519 key");
     let mut rng = CoreOsRng;
-    let keypair: Keypair = Keypair::generate(&mut rng);
-    let private_key_bytes = keypair.secret.to_bytes().to_vec();
-    let public_key_bytes = keypair.public.to_bytes().to_vec();
+    let mut ed25519_seed = [0u8; 32];
+    rng.fill_bytes(&mut ed25519_seed);
+    let signing_key = SigningKey::from_bytes(&ed25519_seed);
+    let verifying_key = signing_key.verifying_key();
+    let private_key_bytes = signing_key.to_bytes().to_vec();
+    let public_key_bytes = verifying_key.to_bytes().to_vec();
     info!("Successfully generated Ed25519 key");
     Ok((private_key_bytes, public_key_bytes))
 }
-
 
 pub struct MockTPMProvider;
 
@@ -231,7 +249,10 @@ impl WindowsSSHAgent {
                 }
             }
             Err(e) => {
-                info!("Could not create TPM provider ({}), falling back to mock provider", e);
+                info!(
+                    "Could not create TPM provider ({}), falling back to mock provider",
+                    e
+                );
                 Box::new(MockTPMProvider)
             }
         };
@@ -239,7 +260,7 @@ impl WindowsSSHAgent {
         // Generate a random master key for the key store
         let mut master_key = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut master_key);
-        
+
         Ok(Self {
             tpm_provider,
             #[cfg(test)]
@@ -264,8 +285,11 @@ impl WindowsSSHAgent {
         public_key: Vec<u8>,
     ) -> Result<(), Box<dyn Error>> {
         // Generate a unique key ID
-        let key_id = format!("key_{}", SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros());
-        
+        let key_id = format!(
+            "key_{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros()
+        );
+
         self.key_store.add_key(
             key_id,
             "ssh-key".to_string(),
@@ -274,7 +298,7 @@ impl WindowsSSHAgent {
             None,
             None, // No expiration by default
         )?;
-        
+
         Ok(())
     }
 
@@ -285,8 +309,11 @@ impl WindowsSSHAgent {
         ttl_seconds: u64,
     ) -> Result<(), Box<dyn Error>> {
         // Generate a unique key ID
-        let key_id = format!("key_{}", SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros());
-        
+        let key_id = format!(
+            "key_{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros()
+        );
+
         self.key_store.add_key(
             key_id,
             "ssh-key".to_string(),
@@ -295,7 +322,7 @@ impl WindowsSSHAgent {
             None,
             Some(ttl_seconds),
         )?;
-        
+
         Ok(())
     }
 
@@ -308,11 +335,7 @@ impl WindowsSSHAgent {
         self.key_store.list_keys()
     }
 
-    pub fn sign_data(
-        &mut self,
-        public_key: &[u8],
-        data: &[u8],
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
+    pub fn sign_data(&mut self, public_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
         // Find the key by its public key
         for key_info in self.list_keys() {
             if let Ok((private_key, stored_public_key)) = self.key_store.get_key(&key_info.key_id) {

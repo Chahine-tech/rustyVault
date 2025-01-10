@@ -24,9 +24,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .tpm_provider
         .generate_key(KeyType::Rsa2048)
         .map_err(|e| {
-            error!("Failed to generate RSA 2048 key: {:?}", e);
-            e
-        })?;
+        error!("Failed to generate RSA 2048 key: {:?}", e);
+        e
+    })?;
 
     info!("Generating Ed25519 private key...");
     let (ed25519_private_key, ed25519_public_key) = ssh_agent
