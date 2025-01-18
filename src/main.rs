@@ -1,90 +1,119 @@
 use log::{error, info};
 use std::error::Error;
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::sync::Arc;
 use std::time::Duration;
 use windows_ssh_agent::{KeyType, SSHAgentServer, WindowsSSHAgent};
+use colored::*;
+use figlet_rs::FIGfont;
+use tokio::signal;
+use tokio::sync::Mutex;
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn print_banner() {
+    let standard_font = FIGfont::standard().unwrap();
+    let figure = standard_font.convert("TPM SSH Agent").unwrap();
+    println!("\n{}", figure.to_string().bright_cyan());
+    println!("{}", "Secure SSH Agent with TPM Integration".bright_yellow());
+    println!("{}", "=================================".bright_yellow());
+}
+
+async fn cleanup_task(cleanup_server: Arc<Mutex<SSHAgentServer>>) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+        
+        let result = async {
+            let mut server = cleanup_server.lock().await;
+            let cleaned = server.agent.cleanup_expired_keys();
+            if cleaned > 0 {
+                info!("{} {}", "Cleaned up".green(), format!("{} expired keys", cleaned).white());
+            }
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }.await;
+
+        if let Err(e) = result {
+            error!("{} {:?}", "Error in cleanup task:".red().bold(), e);
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .init();
 
-    info!("Starting SSH Agent...");
+    print_banner();
+
+    info!("{}", "Starting SSH Agent...".green());
     let mut ssh_agent = match WindowsSSHAgent::new() {
         Ok(agent) => agent,
         Err(e) => {
-            error!("Failed to create SSH agent: {}", e);
+            error!("{} {}", "Failed to create SSH agent:".red().bold(), e);
             return Err(e);
         }
     };
 
-    info!("Generating RSA 2048 private key...");
+    info!("{}", "Generating RSA 2048 private key...".green());
     let (rsa_private_key, rsa_public_key) = ssh_agent
         .tpm_provider
         .generate_key(KeyType::Rsa2048)
         .map_err(|e| {
-        error!("Failed to generate RSA 2048 key: {:?}", e);
-        e
-    })?;
+            error!("{} {:?}", "Failed to generate RSA 2048 key:".red().bold(), e);
+            e
+        })?;
 
-    info!("Generating Ed25519 private key...");
+    info!("{}", "Generating Ed25519 private key...".green());
     let (ed25519_private_key, ed25519_public_key) = ssh_agent
         .tpm_provider
         .generate_key(KeyType::Ed25519)
         .map_err(|e| {
-            error!("Failed to generate Ed25519 key: {:?}", e);
+            error!("{} {:?}", "Failed to generate Ed25519 key:".red().bold(), e);
             e
         })?;
 
-    info!("Adding RSA key...");
+    info!("{}", "Adding RSA key...".green());
     ssh_agent.add_key(rsa_private_key, rsa_public_key)?;
 
-    info!("Adding Ed25519 key...");
+    info!("{}", "Adding Ed25519 key...".green());
     ssh_agent.add_key(ed25519_private_key, ed25519_public_key)?;
 
     // List all keys
-    info!("Current keys in store:");
+    println!("\n{}", "🔑 Current keys in store:".bright_yellow());
+    println!("{}", "----------------------".bright_yellow());
     for key in ssh_agent.list_keys() {
-        info!(
-            "Key ID: {}, Type: {}, Created: {}, Last Used: {}",
-            key.key_id, key.key_type, key.created_at, key.last_used
-        );
+        println!("{}:", "Key Details".cyan().bold());
+        println!("  • ID: {}", key.key_id.to_string().white());
+        println!("  • Type: {}", key.key_type.to_string().white());
+        println!("  • Created: {}", key.created_at.to_string().white());
+        println!("  • Last Used: {}", key.last_used.to_string().white());
     }
 
     let server = Arc::new(Mutex::new(SSHAgentServer { agent: ssh_agent }));
     let cleanup_server = Arc::clone(&server);
 
-    // Start a background thread for key cleanup
-    thread::spawn(move || {
-        loop {
-            thread::sleep(Duration::from_secs(3600)); // Check every hour
-            if let Err(e) = std::panic::catch_unwind(|| {
-                if let Ok(mut server) = cleanup_server.lock() {
-                    let cleaned = server.agent.cleanup_expired_keys();
-                    if cleaned > 0 {
-                        info!("Cleaned up {} expired keys", cleaned);
-                    }
-                }
-            }) {
-                error!("Error in cleanup thread: {:?}", e);
-            }
+    // Start the cleanup task
+    tokio::spawn(cleanup_task(cleanup_server));
+
+    info!("{}", "Starting SSH agent server...".green());
+    
+    // Handle graceful shutdown with Ctrl+C
+    let server_clone = Arc::clone(&server);
+    tokio::spawn(async move {
+        let mut server = server_clone.lock().await;
+        if let Err(e) = server.start().await {
+            error!("{} {:?}", "Server error:".red().bold(), e);
         }
     });
 
-    info!("Starting SSH agent server...");
-    match server.lock() {
-        Ok(mut server) => server.start()?,
-        Err(e) => {
-            error!("Failed to acquire lock for server: {:?}", e);
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to start server",
-            )));
+    // Wait for Ctrl+C signal
+    match signal::ctrl_c().await {
+        Ok(()) => {
+            info!("{}", "Shutting down SSH agent...".yellow());
+        }
+        Err(err) => {
+            error!("{} {:?}", "Unable to listen for shutdown signal:".red().bold(), err);
         }
     }
 
-    info!("SSH Agent initialization complete");
-
+    info!("{}", "SSH Agent shutdown complete".green());
     Ok(())
 }
