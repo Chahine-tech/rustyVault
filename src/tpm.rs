@@ -18,6 +18,98 @@ use windows::Win32::Security::Cryptography::{
     CERT_OPEN_STORE_FLAGS, CERT_QUERY_ENCODING_TYPE, CERT_STORE_PROV_SYSTEM_W, HCERTSTORE,
 };
 
+// SSH Agent Protocol Message Types
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+pub enum SSHAgentMessageType {
+    SSHAgentFailure = 5,
+    SSHAgentSuccess = 6,
+    SSHAgentIdentities = 11,
+    SSHAgentSign = 13,
+    SSHAgentAdd = 17,
+    SSHAgentRemove = 18,
+    SSHAgentLock = 22,
+    SSHAgentUnlock = 23,
+    SSHAgentRemoveAll = 19,
+}
+
+// SSH Agent Protocol Error Types
+#[derive(Debug, thiserror::Error)]
+pub enum SSHAgentError {
+    #[error("Invalid message format")]
+    InvalidMessageFormat,
+    #[error("Invalid message type: {0}")]
+    InvalidMessageType(u8),
+    #[error("Invalid key type")]
+    InvalidKeyType,
+    #[error("Operation failed")]
+    OperationFailed,
+    #[error("Agent is locked")]
+    AgentLocked,
+}
+
+// SSH Agent Protocol Message Parser
+struct SSHAgentMessage {
+    message_type: SSHAgentMessageType,
+    payload: Vec<u8>,
+}
+
+impl SSHAgentMessage {
+    fn parse(data: &[u8]) -> Result<Self, SSHAgentError> {
+        if data.len() < 5 {
+            return Err(SSHAgentError::InvalidMessageFormat);
+        }
+
+        // First 4 bytes are the length in network byte order (big endian)
+        let length = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        if data.len() != length + 4 {
+            return Err(SSHAgentError::InvalidMessageFormat);
+        }
+
+        // Next byte is the message type
+        let message_type = match data[4] {
+            x if x == SSHAgentMessageType::SSHAgentIdentities as u8 => SSHAgentMessageType::SSHAgentIdentities,
+            x if x == SSHAgentMessageType::SSHAgentSign as u8 => SSHAgentMessageType::SSHAgentSign,
+            x if x == SSHAgentMessageType::SSHAgentAdd as u8 => SSHAgentMessageType::SSHAgentAdd,
+            x if x == SSHAgentMessageType::SSHAgentRemove as u8 => SSHAgentMessageType::SSHAgentRemove,
+            x if x == SSHAgentMessageType::SSHAgentLock as u8 => SSHAgentMessageType::SSHAgentLock,
+            x if x == SSHAgentMessageType::SSHAgentUnlock as u8 => SSHAgentMessageType::SSHAgentUnlock,
+            x if x == SSHAgentMessageType::SSHAgentRemoveAll as u8 => SSHAgentMessageType::SSHAgentRemoveAll,
+            x => return Err(SSHAgentError::InvalidMessageType(x)),
+        };
+
+        // Rest is payload
+        let payload = data[5..].to_vec();
+
+        Ok(Self {
+            message_type,
+            payload,
+        })
+    }
+
+    fn create_response(message_type: SSHAgentMessageType, payload: Vec<u8>) -> Vec<u8> {
+        let length = (payload.len() + 1) as u32;
+        let mut response = Vec::with_capacity(length as usize + 4);
+        
+        // Add length in network byte order
+        response.extend_from_slice(&length.to_be_bytes());
+        // Add message type
+        response.push(message_type as u8);
+        // Add payload
+        response.extend_from_slice(&payload);
+        
+        response
+    }
+
+    fn create_success_response() -> Vec<u8> {
+        Self::create_response(SSHAgentMessageType::SSHAgentSuccess, vec![])
+    }
+
+    fn create_failure_response() -> Vec<u8> {
+        Self::create_response(SSHAgentMessageType::SSHAgentFailure, vec![])
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum KeyType {
     Rsa2048,
@@ -417,9 +509,82 @@ impl SSHAgentServer {
     }
 
     fn process_request(agent: &mut WindowsSSHAgent, data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-        // TODO: Implement SSH-Agent protocol here
-        // For now, just return an acknowledgment
-        Ok(vec![0])
+        let message = match SSHAgentMessage::parse(data) {
+            Ok(msg) => msg,
+            Err(e) => {
+                error!("Failed to parse SSH agent message: {}", e);
+                return Ok(SSHAgentMessage::create_failure_response());
+            }
+        };
+
+        match message.message_type {
+            SSHAgentMessageType::SSHAgentIdentities => {
+                // List all identities
+                let keys = agent.list_keys();
+                let mut response = Vec::new();
+                
+                // Number of keys (u32 in network byte order)
+                response.extend_from_slice(&(keys.len() as u32).to_be_bytes());
+                
+                // Add each key's information
+                for key in keys {
+                    if let Ok((_, public_key)) = agent.key_store.get_key(&key.key_id) {
+                        // Key blob length
+                        response.extend_from_slice(&(public_key.len() as u32).to_be_bytes());
+                        // Key blob
+                        response.extend_from_slice(&public_key);
+                        // Comment length
+                        let comment = format!("{}@{}", key.key_type, key.key_id);
+                        response.extend_from_slice(&(comment.len() as u32).to_be_bytes());
+                        // Comment
+                        response.extend_from_slice(comment.as_bytes());
+                    }
+                }
+
+                Ok(SSHAgentMessage::create_response(SSHAgentMessageType::SSHAgentIdentities, response))
+            }
+
+            SSHAgentMessageType::SSHAgentSign => {
+                if message.payload.len() < 8 {
+                    return Ok(SSHAgentMessage::create_failure_response());
+                }
+
+                // Extract key blob and data to sign
+                let key_blob_len = u32::from_be_bytes([
+                    message.payload[0],
+                    message.payload[1],
+                    message.payload[2],
+                    message.payload[3],
+                ]) as usize;
+
+                let key_blob = &message.payload[4..4 + key_blob_len];
+                let data_to_sign = &message.payload[4 + key_blob_len..];
+
+                // Sign the data
+                match agent.sign_data(key_blob, data_to_sign) {
+                    Ok(signature) => {
+                        let mut response = Vec::new();
+                        response.extend_from_slice(&(signature.len() as u32).to_be_bytes());
+                        response.extend_from_slice(&signature);
+                        Ok(SSHAgentMessage::create_response(SSHAgentMessageType::SSHAgentSuccess, response))
+                    }
+                    Err(_) => Ok(SSHAgentMessage::create_failure_response()),
+                }
+            }
+
+            SSHAgentMessageType::SSHAgentRemoveAll => {
+                // Remove all keys
+                for key in agent.list_keys() {
+                    let _ = agent.remove_key(&key.key_id);
+                }
+                Ok(SSHAgentMessage::create_success_response())
+            }
+
+            _ => {
+                error!("Unsupported SSH agent message type: {:?}", message.message_type);
+                Ok(SSHAgentMessage::create_failure_response())
+            }
+        }
     }
 }
 
