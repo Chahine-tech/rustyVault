@@ -6,7 +6,6 @@ use windows_ssh_agent::{KeyType, SSHAgentServer, WindowsSSHAgent};
 use colored::*;
 use figlet_rs::FIGfont;
 use tokio::signal;
-use tokio::sync::Mutex;
 
 fn print_banner() {
     let standard_font = FIGfont::standard().unwrap();
@@ -16,7 +15,7 @@ fn print_banner() {
     println!("{}", "=================================".bright_yellow());
 }
 
-async fn cleanup_task(cleanup_server: Arc<Mutex<SSHAgentServer>>) {
+async fn cleanup_task(cleanup_server: Arc<tokio::sync::Mutex<SSHAgentServer>>) {
     loop {
         tokio::time::sleep(Duration::from_secs(3600)).await;
         
@@ -44,7 +43,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     print_banner();
 
     info!("{}", "Starting SSH Agent...".green());
-    let mut ssh_agent = match WindowsSSHAgent::new() {
+    let mut ssh_agent = match WindowsSSHAgent::new().await {
         Ok(agent) => agent,
         Err(e) => {
             error!("{} {}", "Failed to create SSH agent:".red().bold(), e);
@@ -56,6 +55,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (rsa_private_key, rsa_public_key) = ssh_agent
         .tpm_provider
         .generate_key(KeyType::Rsa2048)
+        .await
         .map_err(|e| {
             error!("{} {:?}", "Failed to generate RSA 2048 key:".red().bold(), e);
             e
@@ -65,16 +65,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (ed25519_private_key, ed25519_public_key) = ssh_agent
         .tpm_provider
         .generate_key(KeyType::Ed25519)
+        .await
         .map_err(|e| {
             error!("{} {:?}", "Failed to generate Ed25519 key:".red().bold(), e);
             e
         })?;
 
     info!("{}", "Adding RSA key...".green());
-    ssh_agent.add_key(rsa_private_key, rsa_public_key)?;
+    ssh_agent.add_key(rsa_private_key, rsa_public_key).await?;
 
     info!("{}", "Adding Ed25519 key...".green());
-    ssh_agent.add_key(ed25519_private_key, ed25519_public_key)?;
+    ssh_agent.add_key(ed25519_private_key, ed25519_public_key).await?;
 
     // List all keys
     println!("\n{}", "🔑 Current keys in store:".bright_yellow());
@@ -87,7 +88,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("  • Last Used: {}", key.last_used.to_string().white());
     }
 
-    let server = Arc::new(Mutex::new(SSHAgentServer { agent: ssh_agent }));
+    let server = Arc::new(tokio::sync::Mutex::new(SSHAgentServer { agent: ssh_agent }));
     let cleanup_server = Arc::clone(&server);
 
     // Start the cleanup task

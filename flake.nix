@@ -1,5 +1,5 @@
 {
-  description = "SSH Agent with TPM support (Windows-targeted development environment)";
+  description = "SSH Agent with TPM support (Cross-platform development environment)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -22,7 +22,7 @@
           inherit system overlays;
         };
 
-        # Configuration des pre-commit hooks
+        # Pre-commit hooks configuration
         pre-commit = pre-commit-hooks.lib.${system}.run {
           src = ./.;
           hooks = {
@@ -41,9 +41,15 @@
 
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
-            # Rust toolchain avec la cible Windows
+            # Rust toolchain with cross-compilation support
             (rust-bin.stable.latest.default.override {
-              targets = [ "x86_64-pc-windows-msvc" ];
+              # Include both native target and Windows
+              targets = [ 
+                (if system == "x86_64-darwin" then "x86_64-apple-darwin"
+                 else if system == "aarch64-darwin" then "aarch64-apple-darwin"
+                 else "x86_64-unknown-linux-gnu")
+                "x86_64-pc-windows-msvc"
+              ];
               extensions = [ 
                 "rust-src"
                 "llvm-tools-preview"
@@ -53,74 +59,82 @@
             })
             rust-analyzer
             
-            # Outils de développement additionnels
-            cargo-edit     # Pour gérer les dépendances facilement
-            cargo-watch   # Pour le développement avec auto-reload
-            cargo-audit   # Pour les audits de sécurité
-            cargo-expand  # Pour voir le code macro expansé
+            # Additional development tools
+            cargo-edit     # For easy dependency management
+            cargo-watch   # For development with auto-reload
+            cargo-audit   # For security audits
+            cargo-expand  # To see expanded macro code
             
-            # Outils Git
+            # Git tools
             git
             gh           # GitHub CLI
             
-            # Outils de développement généraux
+            # General development tools
             just         # Command runner
-            nixpkgs-fmt  # Formateur pour les fichiers Nix
+            nixpkgs-fmt  # Formatter for Nix files
           ];
 
           inherit (pre-commit) shellHook;
 
-          # Variables d'environnement pour le développement
+          # Environment variables for development
           RUST_BACKTRACE = "1";
           RUST_LOG = "debug";
           
-          # Configuration supplémentaire
+          # Additional configuration
           shellHook = ''
-            echo "Configuring Windows-targeted development environment"
-            echo "Note: This environment is for development only. The project must be built and run on Windows."
+            echo "Configuring cross-platform development environment"
+            echo "Native target: ${system}"
+            echo "Cross target: x86_64-pc-windows-msvc"
             
-            # Configuration de cargo pour cibler Windows par défaut
+            # Configure cargo for cross-compilation
             mkdir -p .cargo
             cat > .cargo/config.toml << EOF
-            [build]
-            target = "x86_64-pc-windows-msvc"
+            [alias]
+            check-all = "check --all-targets --all-features"
+            test-all = "test --all-targets --all-features"
+            build-windows = "build --target x86_64-pc-windows-msvc"
 
             [target.x86_64-pc-windows-msvc]
             rustflags = [
                 "-C", "target-feature=+crt-static",
                 "-D", "warnings"
             ]
-
-            [alias]
-            check-all = "check --all-targets --all-features"
-            test-all = "test --all-targets --all-features"
             EOF
 
-            # Création d'un fichier justfile si non existant
+            # Create justfile if it doesn't exist
             if [ ! -f justfile ]; then
               cat > justfile << EOF
-            # Liste toutes les commandes disponibles
+            # List all available commands
             default:
                 @just --list
 
-            # Vérifie le code
+            # Check the code (native target)
             check:
                 cargo check-all
 
-            # Lance les tests
+            # Check the code (Windows target)
+            check-windows:
+                cargo check --target x86_64-pc-windows-msvc
+
+            # Run tests (native target)
             test:
                 cargo test-all
 
-            # Formate le code
+            # Build for Windows
+            build-windows:
+                cargo build-windows
+
+            # Format code
             fmt:
                 cargo fmt
                 nixpkgs-fmt .
 
-            # Vérifie le style
+            # Check style
             lint:
                 cargo clippy -- -D warnings
+                cargo clippy --target x86_64-pc-windows-msvc -- -D warnings
 
-            # Audit des dépendances
+            # Audit dependencies
             audit:
                 cargo audit
             EOF
