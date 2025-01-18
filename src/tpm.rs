@@ -9,6 +9,7 @@ use std::error::Error;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Security::Cryptography::{
     BCryptCloseAlgorithmProvider, BCryptCreateHash, BCryptDestroyHash, BCryptFinishHash,
@@ -357,8 +358,80 @@ pub struct SSHAgentServer {
 }
 
 impl SSHAgentServer {
-    pub fn start(&mut self) -> Result<(), Box<dyn Error>> {
+    pub async fn start(&mut self) -> Result<(), Box<dyn Error>> {
         info!("Starting SSH Agent Server");
+        
+        // Create an async TCP listener
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        info!("SSH Agent listening on {}", addr);
+
+        // Main connection handling loop
+        loop {
+            match listener.accept().await {
+                Ok((socket, peer_addr)) => {
+                    info!("New connection from {}", peer_addr);
+                    
+                    // Clone the required data for the handler
+                    let agent = Arc::new(Mutex::new(self.agent.clone()));
+                    
+                    // Spawn a new task to handle the connection
+                    tokio::spawn(async move {
+                        if let Err(e) = Self::handle_connection(socket, agent).await {
+                            error!("Error handling connection from {}: {}", peer_addr, e);
+                        }
+                    });
+                }
+                Err(e) => {
+                    error!("Error accepting connection: {}", e);
+                }
+            }
+        }
+    }
+
+    async fn handle_connection(
+        socket: tokio::net::TcpStream,
+        agent: Arc<Mutex<WindowsSSHAgent>>,
+    ) -> Result<(), Box<dyn Error>> {
+        let (mut reader, mut writer) = socket.into_split();
+        let mut buffer = vec![0u8; 8192];
+
+        loop {
+            // Read data asynchronously
+            let n = reader.read(&mut buffer).await?;
+            if n == 0 {
+                break; // Connection closed
+            }
+
+            // Process the request
+            let response = {
+                let mut agent = agent.lock().map_err(|e| e.to_string())?;
+                Self::process_request(&mut agent, &buffer[..n])?
+            };
+
+            // Send response asynchronously
+            writer.write_all(&response).await?;
+        }
+
         Ok(())
+    }
+
+    fn process_request(agent: &mut WindowsSSHAgent, data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+        // TODO: Implement SSH-Agent protocol here
+        // For now, just return an acknowledgment
+        Ok(vec![0])
+    }
+}
+
+// Enable cloning for WindowsSSHAgent
+impl Clone for WindowsSSHAgent {
+    fn clone(&self) -> Self {
+        let mut master_key = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut master_key);
+        
+        Self {
+            tpm_provider: Box::new(MockTPMProvider),
+            key_store: KeyStore::new(&master_key),
+        }
     }
 }
