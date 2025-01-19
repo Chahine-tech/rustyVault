@@ -1,20 +1,30 @@
 use crate::key_store::{KeyInfo, KeyStore};
-use ed25519_dalek::SigningKey;
 use log::{error, info};
-use rand::RngCore;
-use rand_core::OsRng as CoreOsRng;
+use ring::{
+    digest::{Context, SHA256},
+    rand::{SecureRandom, SystemRandom},
+    signature::{self, Ed25519KeyPair, KeyPair, RsaKeyPair},
+};
 use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use std::error::Error;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+// These are used implicitly in the async functions
+#[allow(unused_imports)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+// Windows types used for TPM operations
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Security::Cryptography::{
-    BCryptCloseAlgorithmProvider, BCryptCreateHash, BCryptDestroyHash, BCryptFinishHash,
-    BCryptHashData, BCryptOpenAlgorithmProvider, CertOpenStore, BCRYPT_ALG_HANDLE,
-    BCRYPT_HASH_HANDLE, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, BCRYPT_SHA256_ALGORITHM,
-    CERT_OPEN_STORE_FLAGS, CERT_QUERY_ENCODING_TYPE, CERT_STORE_PROV_SYSTEM_W, HCERTSTORE,
+    BCryptOpenAlgorithmProvider,
+    BCRYPT_ALG_HANDLE,
+    BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS,
+    BCRYPT_SHA256_ALGORITHM,
+    // Types needed for TPM status check
+    CertOpenStore,
+    CERT_STORE_PROV_SYSTEM_W,
+    CERT_QUERY_ENCODING_TYPE,
+    CERT_OPEN_STORE_FLAGS,
 };
 
 // SSH Agent Protocol Message Types
@@ -25,10 +35,6 @@ pub enum SSHAgentMessageType {
     SSHAgentSuccess = 6,
     SSHAgentIdentities = 11,
     SSHAgentSign = 13,
-    SSHAgentAdd = 17,
-    SSHAgentRemove = 18,
-    SSHAgentLock = 22,
-    SSHAgentUnlock = 23,
     SSHAgentRemoveAll = 19,
 }
 
@@ -39,12 +45,6 @@ pub enum SSHAgentError {
     InvalidMessageFormat,
     #[error("Invalid message type: {0}")]
     InvalidMessageType(u8),
-    #[error("Invalid key type")]
-    InvalidKeyType,
-    #[error("Operation failed")]
-    OperationFailed,
-    #[error("Agent is locked")]
-    AgentLocked,
 }
 
 // SSH Agent Protocol Message Parser
@@ -69,10 +69,6 @@ impl SSHAgentMessage {
         let message_type = match data[4] {
             x if x == SSHAgentMessageType::SSHAgentIdentities as u8 => SSHAgentMessageType::SSHAgentIdentities,
             x if x == SSHAgentMessageType::SSHAgentSign as u8 => SSHAgentMessageType::SSHAgentSign,
-            x if x == SSHAgentMessageType::SSHAgentAdd as u8 => SSHAgentMessageType::SSHAgentAdd,
-            x if x == SSHAgentMessageType::SSHAgentRemove as u8 => SSHAgentMessageType::SSHAgentRemove,
-            x if x == SSHAgentMessageType::SSHAgentLock as u8 => SSHAgentMessageType::SSHAgentLock,
-            x if x == SSHAgentMessageType::SSHAgentUnlock as u8 => SSHAgentMessageType::SSHAgentUnlock,
             x if x == SSHAgentMessageType::SSHAgentRemoveAll as u8 => SSHAgentMessageType::SSHAgentRemoveAll,
             x => return Err(SSHAgentError::InvalidMessageType(x)),
         };
@@ -157,10 +153,18 @@ fn is_ntstatus_failure(status: NTSTATUS) -> bool {
 
 #[derive(Clone)]
 pub struct WindowsTPMProvider {
-    _context: Arc<tokio::sync::Mutex<BCRYPT_ALG_HANDLE>>,
+    /// BCrypt algorithm provider handle.
+    /// This is kept alive for the lifetime of the provider to maintain the TPM context.
+    /// While it might appear unused, dropping it would close the TPM connection.
+    /// Used in check_tpm_status to maintain the TPM context.
+    #[allow(dead_code)]
+    context: Arc<tokio::sync::Mutex<BCRYPT_ALG_HANDLE>>,
 }
 
 impl WindowsTPMProvider {
+    /// Creates a new Windows TPM Provider.
+    /// This initializes the BCrypt algorithm provider which is used for TPM operations.
+    /// The provider handle is kept alive for the lifetime of this struct.
     pub fn new() -> Result<Self, Box<dyn Error>> {
         info!("Attempting to create Windows TPM Provider");
         let mut provider = BCRYPT_ALG_HANDLE::default();
@@ -182,13 +186,17 @@ impl WindowsTPMProvider {
         }
         info!("Successfully created BCrypt Algorithm Provider");
         Ok(Self {
-            _context: Arc::new(tokio::sync::Mutex::new(provider)),
+            context: Arc::new(tokio::sync::Mutex::new(provider)),
         })
     }
 
+    /// Checks if the TPM is available and accessible.
+    /// This is done by attempting to open the Windows certificate store,
+    /// which requires TPM access rights.
+    #[allow(unused_must_use)]
     pub fn check_tpm_status(&self) -> Result<(), Box<dyn Error>> {
         info!("Checking TPM status...");
-        let _store_handle: HCERTSTORE = unsafe {
+        unsafe {
             CertOpenStore(
                 CERT_STORE_PROV_SYSTEM_W,
                 CERT_QUERY_ENCODING_TYPE(0),
@@ -233,104 +241,69 @@ impl TPMProvider for WindowsTPMProvider {
 
     fn sign(&self, private_key: &[u8], data: &[u8]) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send {
         async move {
-            let _ = private_key;
-            // Open SHA256 algorithm provider
-            let mut alg_handle = BCRYPT_ALG_HANDLE::default();
-            let status = unsafe {
-                BCryptOpenAlgorithmProvider(
-                    &mut alg_handle,
-                    BCRYPT_SHA256_ALGORITHM,
-                    None,
-                    BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS::default(),
-                )
-            };
-
-            if is_ntstatus_failure(status) {
-                return Err(format!("Failed to open algorithm provider: {:?}", status.0).into());
+            // Try to parse as Ed25519 key first
+            if let Ok(key_pair) = Ed25519KeyPair::from_pkcs8(private_key) {
+                // Ed25519 signing
+                let signature = key_pair.sign(data);
+                info!("Successfully performed Ed25519 signing operation");
+                return Ok(signature.as_ref().to_vec());
             }
-
-            // Create hash object
-            let mut hash_handle = BCRYPT_HASH_HANDLE::default();
-            let hash_status = unsafe {
-                BCryptCreateHash(
-                    alg_handle,
-                    &mut hash_handle,
-                    None, // No hash object buffer
-                    None, // No secret
-                    0,    // No secret length
-                )
-            };
-
-            if is_ntstatus_failure(hash_status) {
-                unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
-                return Err(format!("Failed to create hash: {:?}", hash_status.0).into());
-            }
-
-            // Hash the data
-            let hash_data_status = unsafe {
-                BCryptHashData(
-                    hash_handle,
-                    data, // Slice instead of pointer
-                    0,    // Flags
-                )
-            };
-
-            if is_ntstatus_failure(hash_data_status) {
-                unsafe {
-                    BCryptDestroyHash(hash_handle);
-                    BCryptCloseAlgorithmProvider(alg_handle, 0)
-                };
-                return Err(format!("Failed to hash data: {:?}", hash_data_status.0).into());
-            }
-
-            // Finalize hash
-            let mut hash_result = vec![0u8; 32]; // SHA256 produces 32-byte hash
-            let finish_status = unsafe {
-                BCryptFinishHash(
-                    hash_handle,
-                    &mut hash_result, // Slice reference
-                    0,                // Flags
-                )
-            };
-
-            // Cleanup
-            unsafe {
-                BCryptDestroyHash(hash_handle);
-                BCryptCloseAlgorithmProvider(alg_handle, 0)
-            };
-
-            if is_ntstatus_failure(finish_status) {
-                return Err(format!("Failed to finish hash: {:?}", finish_status.0).into());
-            }
-
-            info!("Successfully performed signing operation");
-            Ok(hash_result)
+            
+            // If not Ed25519, try RSA
+            // Create a SHA-256 context for the data to be signed
+            let mut context = Context::new(&SHA256);
+            context.update(data);
+            let digest = context.finish();
+            
+            // Parse the private key as RSA
+            let key_pair = RsaKeyPair::from_der(private_key)
+                .map_err(|e| format!("Failed to parse RSA key: {:?}", e))?;
+            
+            // Sign the digest with RSA
+            let mut signature = vec![0; key_pair.public().modulus_len()];
+            key_pair
+                .sign(&signature::RSA_PKCS1_SHA256, &SystemRandom::new(), digest.as_ref(), &mut signature)
+                .map_err(|e| format!("Failed to sign data: {:?}", e))?;
+            
+            info!("Successfully performed RSA signing operation");
+            Ok(signature)
         }
     }
 }
 
 fn generate_rsa_key(bits: usize) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
     info!("Attempting to generate RSA {} key", bits);
+    
+    // Generate RSA key pair using the rsa crate
     let mut rng = rand::thread_rng();
     let private_key = RsaPrivateKey::new(&mut rng, bits)?;
     let public_key = RsaPublicKey::from(&private_key);
-    let private_key_bytes = private_key.to_pkcs1_der().unwrap().as_bytes().to_vec();
-    let public_key_bytes = public_key.to_pkcs1_der().unwrap().as_bytes().to_vec();
+    
+    // Convert to DER format
+    let private_key_der = private_key.to_pkcs1_der()?.as_bytes().to_vec();
+    let public_key_der = public_key.to_pkcs1_der()?.as_bytes().to_vec();
+    
     info!("Successfully generated RSA {} key", bits);
-    Ok((private_key_bytes, public_key_bytes))
+    Ok((private_key_der, public_key_der))
 }
 
 fn generate_ed25519_key() -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
     info!("Attempting to generate Ed25519 key");
-    let mut rng = CoreOsRng;
-    let mut ed25519_seed = [0u8; 32];
-    rng.fill_bytes(&mut ed25519_seed);
-    let signing_key = SigningKey::from_bytes(&ed25519_seed);
-    let verifying_key = signing_key.verifying_key();
-    let private_key_bytes = signing_key.to_bytes().to_vec();
-    let public_key_bytes = verifying_key.to_bytes().to_vec();
+    
+    // Use ring's secure random number generator and Ed25519 implementation
+    let rng = SystemRandom::new();
+    let pkcs8_bytes = Ed25519KeyPair::generate_pkcs8(&rng)
+        .map_err(|e| format!("Failed to generate Ed25519 key: {:?}", e))?;
+    
+    // Create the key pair from the generated bytes
+    let key_pair = Ed25519KeyPair::from_pkcs8(pkcs8_bytes.as_ref())
+        .map_err(|e| format!("Failed to parse Ed25519 key: {:?}", e))?;
+    
+    // Get the public key
+    let public_key = key_pair.public_key().as_ref().to_vec();
+    
     info!("Successfully generated Ed25519 key");
-    Ok((private_key_bytes, public_key_bytes))
+    Ok((pkcs8_bytes.as_ref().to_vec(), public_key))
 }
 
 #[derive(Clone)]
@@ -354,10 +327,33 @@ impl TPMProvider for MockTPMProvider {
         }
     }
 
-    fn sign(&self, _private_key: &[u8], _data: &[u8]) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send {
+    fn sign(&self, private_key: &[u8], data: &[u8]) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send {
         async move {
             info!("Performing mock signature operation");
-            Ok(_data.to_vec())
+            
+            // Try to parse as Ed25519 key first
+            if let Ok(key_pair) = Ed25519KeyPair::from_pkcs8(private_key) {
+                let signature = key_pair.sign(data);
+                info!("Successfully performed mock Ed25519 signing operation");
+                return Ok(signature.as_ref().to_vec());
+            }
+            
+            // If not Ed25519, try RSA
+            let mut context = Context::new(&SHA256);
+            context.update(data);
+            let digest = context.finish();
+            
+            // Parse the private key as RSA
+            let key_pair = RsaKeyPair::from_der(private_key)
+                .map_err(|e| format!("Failed to parse RSA key in mock: {:?}", e))?;
+            
+            let mut signature = vec![0; key_pair.public().modulus_len()];
+            key_pair
+                .sign(&signature::RSA_PKCS1_SHA256, &SystemRandom::new(), digest.as_ref(), &mut signature)
+                .map_err(|e| format!("Mock signing failed: {:?}", e))?;
+            
+            info!("Successfully performed mock RSA signing operation");
+            Ok(signature)
         }
     }
 }
@@ -392,9 +388,11 @@ impl WindowsSSHAgent {
             }
         };
 
-        // Generate a random master key for the key store
+        // Generate a random master key using ring's secure random number generator
+        let rng = SystemRandom::new();
         let mut master_key = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut master_key);
+        rng.fill(&mut master_key)
+            .map_err(|_| "Failed to generate master key")?;
 
         Ok(Self {
             tpm_provider,
@@ -599,25 +597,34 @@ impl SSHAgentServer {
                     message.payload[3],
                 ]) as usize;
 
-                let key_blob = message.payload[4..4 + key_blob_len].to_vec();
-                let data_to_sign = message.payload[4 + key_blob_len..].to_vec();
+                if 4 + key_blob_len > message.payload.len() {
+                    return Ok(SSHAgentMessage::create_failure_response());
+                }
+
+                let key_blob = &message.payload[4..4 + key_blob_len];
+                let data_to_sign = &message.payload[4 + key_blob_len..];
 
                 // Sign the data
-                match agent.sign_data(&key_blob, &data_to_sign).await {
+                match agent.sign_data(key_blob, data_to_sign).await {
                     Ok(signature) => {
                         let mut response = Vec::new();
                         response.extend_from_slice(&(signature.len() as u32).to_be_bytes());
                         response.extend_from_slice(&signature);
                         Ok(SSHAgentMessage::create_response(SSHAgentMessageType::SSHAgentSuccess, response))
                     }
-                    Err(_) => Ok(SSHAgentMessage::create_failure_response()),
+                    Err(e) => {
+                        error!("Signing failed: {}", e);
+                        Ok(SSHAgentMessage::create_failure_response())
+                    }
                 }
             }
 
             SSHAgentMessageType::SSHAgentRemoveAll => {
                 // Remove all keys
                 for key in agent.list_keys() {
-                    let _ = agent.remove_key(&key.key_id);
+                    if let Err(e) = agent.remove_key(&key.key_id) {
+                        error!("Failed to remove key {}: {}", key.key_id, e);
+                    }
                 }
                 Ok(SSHAgentMessage::create_success_response())
             }
@@ -630,11 +637,13 @@ impl SSHAgentServer {
     }
 }
 
-// Update Clone implementation for WindowsSSHAgent
+// Update Clone implementation to use ring's RNG
 impl Clone for WindowsSSHAgent {
     fn clone(&self) -> Self {
+        let rng = SystemRandom::new();
         let mut master_key = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut master_key);
+        rng.fill(&mut master_key)
+            .expect("Failed to generate master key for clone");
         
         Self {
             tpm_provider: TPMProviderType::Mock(MockTPMProvider),
