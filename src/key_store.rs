@@ -1,9 +1,7 @@
-use aes_gcm::{
-    aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce,
-};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use log::{error, info};
+use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey, NONCE_LEN};
+use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -39,15 +37,18 @@ pub struct StoredKey {
 }
 
 pub struct KeyStore {
-    cipher: Aes256Gcm,
+    key: LessSafeKey,
     keys: HashMap<String, StoredKey>,
 }
 
 impl KeyStore {
     pub fn new(master_key: &[u8; 32]) -> Self {
-        let cipher = Aes256Gcm::new(master_key.into());
+        let unbound_key = UnboundKey::new(&aead::AES_256_GCM, master_key)
+            .expect("Failed to create unbound key");
+        let key = LessSafeKey::new(unbound_key);
+        
         Self {
-            cipher,
+            key,
             keys: HashMap::new(),
         }
     }
@@ -67,18 +68,21 @@ impl KeyStore {
             .as_secs();
 
         // Generate a random nonce
-        let nonce_bytes: [u8; 12] = rand::random();
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let mut nonce_bytes = [0u8; NONCE_LEN];
+        SystemRandom::new()
+            .fill(&mut nonce_bytes)
+            .map_err(|_| KeyStoreError::EncryptionError("Failed to generate nonce".to_string()))?;
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
 
-        // Encrypt the private key
-        let encrypted_private_key = self
-            .cipher
-            .encrypt(nonce, private_key.as_slice())
+        // Prepare buffer for in-place encryption
+        let mut in_out = private_key;
+        self.key
+            .seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
             .map_err(|e| KeyStoreError::EncryptionError(e.to_string()))?;
 
         // Combine nonce and encrypted data
-        let mut combined = nonce.to_vec();
-        combined.extend(encrypted_private_key);
+        let mut combined = nonce_bytes.to_vec();
+        combined.extend_from_slice(&in_out);
 
         let stored_key = StoredKey {
             key_id: key_id.clone(),
@@ -124,19 +128,23 @@ impl KeyStore {
             .decode(&key.encrypted_private_key)
             .map_err(|_| KeyStoreError::InvalidKeyData)?;
 
-        if combined.len() < 12 {
+        if combined.len() < NONCE_LEN {
             return Err(KeyStoreError::InvalidKeyData);
         }
 
         // Split into nonce and encrypted data
-        let (nonce, encrypted_data) = combined.split_at(12);
-        let nonce = Nonce::from_slice(nonce);
+        let (nonce_bytes, encrypted_data) = combined.split_at(NONCE_LEN);
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes.try_into().unwrap());
 
+        // Create mutable buffer for decryption
+        let mut decryption_buffer = encrypted_data.to_vec();
+        
         // Decrypt the private key
         let private_key = self
-            .cipher
-            .decrypt(nonce, encrypted_data)
-            .map_err(|e| KeyStoreError::EncryptionError(e.to_string()))?;
+            .key
+            .open_in_place(nonce, Aad::empty(), &mut decryption_buffer)
+            .map_err(|e| KeyStoreError::EncryptionError(e.to_string()))?
+            .to_vec();
 
         let public_key = BASE64
             .decode(&key.public_key)
