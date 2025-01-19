@@ -10,17 +10,13 @@ use rsa::{RsaPrivateKey, RsaPublicKey};
 use std::error::Error;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-// These are used implicitly in the async functions
-#[allow(unused_imports)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-// Windows types used for TPM operations
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Security::Cryptography::{
     BCryptOpenAlgorithmProvider,
     BCRYPT_ALG_HANDLE,
     BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS,
     BCRYPT_SHA256_ALGORITHM,
-    // Types needed for TPM status check
     CertOpenStore,
     CERT_STORE_PROV_SYSTEM_W,
     CERT_QUERY_ENCODING_TYPE,
