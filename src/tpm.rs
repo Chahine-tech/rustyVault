@@ -7,7 +7,6 @@ use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use std::error::Error;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use windows::Win32::Foundation::NTSTATUS;
@@ -117,18 +116,48 @@ pub enum KeyType {
     Ed25519,
 }
 
+#[derive(Clone)]
+pub enum TPMProviderType {
+    Windows(WindowsTPMProvider),
+    Mock(MockTPMProvider),
+}
+
+impl TPMProviderType {
+    pub async fn initialize(&self) -> Result<(), Box<dyn Error>> {
+        match self {
+            TPMProviderType::Windows(provider) => provider.initialize().await,
+            TPMProviderType::Mock(provider) => provider.initialize().await,
+        }
+    }
+
+    pub async fn generate_key(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
+        match self {
+            TPMProviderType::Windows(provider) => provider.generate_key(key_type).await,
+            TPMProviderType::Mock(provider) => provider.generate_key(key_type).await,
+        }
+    }
+
+    pub async fn sign(&self, private_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+        match self {
+            TPMProviderType::Windows(provider) => provider.sign(private_key, data).await,
+            TPMProviderType::Mock(provider) => provider.sign(private_key, data).await,
+        }
+    }
+}
+
 pub trait TPMProvider: Send + Sync {
-    fn initialize(&self) -> Result<(), Box<dyn Error>>;
-    fn generate_key(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>;
-    fn sign(&self, private_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>>;
+    fn initialize(&self) -> impl std::future::Future<Output = Result<(), Box<dyn Error>>> + Send;
+    fn generate_key(&self, key_type: KeyType) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send;
+    fn sign(&self, private_key: &[u8], data: &[u8]) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send;
 }
 
 fn is_ntstatus_failure(status: NTSTATUS) -> bool {
     status.0 < 0
 }
 
+#[derive(Clone)]
 pub struct WindowsTPMProvider {
-    _context: Arc<Mutex<BCRYPT_ALG_HANDLE>>,
+    _context: Arc<tokio::sync::Mutex<BCRYPT_ALG_HANDLE>>,
 }
 
 impl WindowsTPMProvider {
@@ -153,7 +182,7 @@ impl WindowsTPMProvider {
         }
         info!("Successfully created BCrypt Algorithm Provider");
         Ok(Self {
-            _context: Arc::new(Mutex::new(provider)),
+            _context: Arc::new(tokio::sync::Mutex::new(provider)),
         })
     }
 
@@ -183,94 +212,100 @@ unsafe impl Send for WindowsTPMProvider {}
 unsafe impl Sync for WindowsTPMProvider {}
 
 impl TPMProvider for WindowsTPMProvider {
-    fn initialize(&self) -> Result<(), Box<dyn Error>> {
-        info!("Initializing Windows TPM Provider");
-        self.check_tpm_status()?;
-        Ok(())
-    }
-
-    fn generate_key(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
-        info!("Generating key for {:?}", key_type);
-        match key_type {
-            KeyType::Rsa2048 => generate_rsa_key(2048),
-            KeyType::Rsa4096 => generate_rsa_key(4096),
-            KeyType::Ed25519 => generate_ed25519_key(),
+    fn initialize(&self) -> impl std::future::Future<Output = Result<(), Box<dyn Error>>> + Send {
+        async move {
+            info!("Initializing Windows TPM Provider");
+            self.check_tpm_status()?;
+            Ok(())
         }
     }
 
-    fn sign(&self, private_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-        let _ = private_key;
-        // Open SHA256 algorithm provider
-        let mut alg_handle = BCRYPT_ALG_HANDLE::default();
-        let status = unsafe {
-            BCryptOpenAlgorithmProvider(
-                &mut alg_handle,
-                BCRYPT_SHA256_ALGORITHM,
-                None,
-                BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS::default(),
-            )
-        };
-
-        if is_ntstatus_failure(status) {
-            return Err(format!("Failed to open algorithm provider: {:?}", status.0).into());
+    fn generate_key(&self, key_type: KeyType) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send {
+        async move {
+            info!("Generating key for {:?}", key_type);
+            match key_type {
+                KeyType::Rsa2048 => generate_rsa_key(2048),
+                KeyType::Rsa4096 => generate_rsa_key(4096),
+                KeyType::Ed25519 => generate_ed25519_key(),
+            }
         }
+    }
 
-        // Create hash object
-        let mut hash_handle = BCRYPT_HASH_HANDLE::default();
-        let hash_status = unsafe {
-            BCryptCreateHash(
-                alg_handle,
-                &mut hash_handle,
-                None, // No hash object buffer
-                None, // No secret
-                0,    // No secret length
-            )
-        };
+    fn sign(&self, private_key: &[u8], data: &[u8]) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send {
+        async move {
+            let _ = private_key;
+            // Open SHA256 algorithm provider
+            let mut alg_handle = BCRYPT_ALG_HANDLE::default();
+            let status = unsafe {
+                BCryptOpenAlgorithmProvider(
+                    &mut alg_handle,
+                    BCRYPT_SHA256_ALGORITHM,
+                    None,
+                    BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS::default(),
+                )
+            };
 
-        if is_ntstatus_failure(hash_status) {
-            unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
-            return Err(format!("Failed to create hash: {:?}", hash_status.0).into());
-        }
+            if is_ntstatus_failure(status) {
+                return Err(format!("Failed to open algorithm provider: {:?}", status.0).into());
+            }
 
-        // Hash the data
-        let hash_data_status = unsafe {
-            BCryptHashData(
-                hash_handle,
-                data, // Slice instead of pointer
-                0,    // Flags
-            )
-        };
+            // Create hash object
+            let mut hash_handle = BCRYPT_HASH_HANDLE::default();
+            let hash_status = unsafe {
+                BCryptCreateHash(
+                    alg_handle,
+                    &mut hash_handle,
+                    None, // No hash object buffer
+                    None, // No secret
+                    0,    // No secret length
+                )
+            };
 
-        if is_ntstatus_failure(hash_data_status) {
+            if is_ntstatus_failure(hash_status) {
+                unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
+                return Err(format!("Failed to create hash: {:?}", hash_status.0).into());
+            }
+
+            // Hash the data
+            let hash_data_status = unsafe {
+                BCryptHashData(
+                    hash_handle,
+                    data, // Slice instead of pointer
+                    0,    // Flags
+                )
+            };
+
+            if is_ntstatus_failure(hash_data_status) {
+                unsafe {
+                    BCryptDestroyHash(hash_handle);
+                    BCryptCloseAlgorithmProvider(alg_handle, 0)
+                };
+                return Err(format!("Failed to hash data: {:?}", hash_data_status.0).into());
+            }
+
+            // Finalize hash
+            let mut hash_result = vec![0u8; 32]; // SHA256 produces 32-byte hash
+            let finish_status = unsafe {
+                BCryptFinishHash(
+                    hash_handle,
+                    &mut hash_result, // Slice reference
+                    0,                // Flags
+                )
+            };
+
+            // Cleanup
             unsafe {
                 BCryptDestroyHash(hash_handle);
                 BCryptCloseAlgorithmProvider(alg_handle, 0)
             };
-            return Err(format!("Failed to hash data: {:?}", hash_data_status.0).into());
+
+            if is_ntstatus_failure(finish_status) {
+                return Err(format!("Failed to finish hash: {:?}", finish_status.0).into());
+            }
+
+            info!("Successfully performed signing operation");
+            Ok(hash_result)
         }
-
-        // Finalize hash
-        let mut hash_result = vec![0u8; 32]; // SHA256 produces 32-byte hash
-        let finish_status = unsafe {
-            BCryptFinishHash(
-                hash_handle,
-                &mut hash_result, // Slice reference
-                0,                // Flags
-            )
-        };
-
-        // Cleanup
-        unsafe {
-            BCryptDestroyHash(hash_handle);
-            BCryptCloseAlgorithmProvider(alg_handle, 0)
-        };
-
-        if is_ntstatus_failure(finish_status) {
-            return Err(format!("Failed to finish hash: {:?}", finish_status.0).into());
-        }
-
-        info!("Successfully performed signing operation");
-        Ok(hash_result)
     }
 }
 
@@ -298,30 +333,37 @@ fn generate_ed25519_key() -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
     Ok((private_key_bytes, public_key_bytes))
 }
 
+#[derive(Clone)]
 pub struct MockTPMProvider;
 
 impl TPMProvider for MockTPMProvider {
-    fn initialize(&self) -> Result<(), Box<dyn Error>> {
-        info!("Initializing Mock TPM Provider");
-        Ok(())
-    }
-
-    fn generate_key(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
-        info!("Generating mock key for {:?}", key_type);
-        match key_type {
-            KeyType::Rsa2048 | KeyType::Rsa4096 => generate_rsa_key(2048),
-            KeyType::Ed25519 => generate_ed25519_key(),
+    fn initialize(&self) -> impl std::future::Future<Output = Result<(), Box<dyn Error>>> + Send {
+        async move {
+            info!("Initializing Mock TPM Provider");
+            Ok(())
         }
     }
 
-    fn sign(&self, _private_key: &[u8], _data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-        info!("Performing mock signature operation");
-        Ok(_data.to_vec())
+    fn generate_key(&self, key_type: KeyType) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send {
+        async move {
+            info!("Generating mock key for {:?}", key_type);
+            match key_type {
+                KeyType::Rsa2048 | KeyType::Rsa4096 => generate_rsa_key(2048),
+                KeyType::Ed25519 => generate_ed25519_key(),
+            }
+        }
+    }
+
+    fn sign(&self, _private_key: &[u8], _data: &[u8]) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send {
+        async move {
+            info!("Performing mock signature operation");
+            Ok(_data.to_vec())
+        }
     }
 }
 
 pub struct WindowsSSHAgent {
-    pub tpm_provider: Box<dyn TPMProvider>,
+    pub tpm_provider: TPMProviderType,
     #[cfg(test)]
     pub key_store: KeyStore,
     #[cfg(not(test))]
@@ -329,16 +371,16 @@ pub struct WindowsSSHAgent {
 }
 
 impl WindowsSSHAgent {
-    pub fn new() -> Result<Self, Box<dyn Error>> {
+    pub async fn new() -> Result<Self, Box<dyn Error>> {
         // Try to create WindowsTPMProvider first
-        let tpm_provider: Box<dyn TPMProvider> = match WindowsTPMProvider::new() {
+        let tpm_provider = match WindowsTPMProvider::new() {
             Ok(provider) => {
-                if provider.initialize().is_ok() {
+                if provider.initialize().await.is_ok() {
                     info!("Successfully initialized Windows TPM Provider");
-                    Box::new(provider)
+                    TPMProviderType::Windows(provider)
                 } else {
                     info!("TPM initialization failed, falling back to mock provider");
-                    Box::new(MockTPMProvider)
+                    TPMProviderType::Mock(MockTPMProvider)
                 }
             }
             Err(e) => {
@@ -346,7 +388,7 @@ impl WindowsSSHAgent {
                     "Could not create TPM provider ({}), falling back to mock provider",
                     e
                 );
-                Box::new(MockTPMProvider)
+                TPMProviderType::Mock(MockTPMProvider)
             }
         };
 
@@ -365,14 +407,14 @@ impl WindowsSSHAgent {
 
     /// Constructor for testing purposes
     #[doc(hidden)]
-    pub fn new_test(tpm_provider: Box<dyn TPMProvider>, key_store: KeyStore) -> Self {
+    pub fn new_test(tpm_provider: TPMProviderType, key_store: KeyStore) -> Self {
         Self {
             tpm_provider,
             key_store,
         }
     }
 
-    pub fn add_key(
+    pub async fn add_key(
         &mut self,
         private_key: Vec<u8>,
         public_key: Vec<u8>,
@@ -395,7 +437,7 @@ impl WindowsSSHAgent {
         Ok(())
     }
 
-    pub fn add_key_with_ttl(
+    pub async fn add_key_with_ttl(
         &mut self,
         private_key: Vec<u8>,
         public_key: Vec<u8>,
@@ -419,6 +461,18 @@ impl WindowsSSHAgent {
         Ok(())
     }
 
+    pub async fn sign_data(&mut self, public_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+        // Find the key by its public key
+        for key_info in self.list_keys() {
+            if let Ok((private_key, stored_public_key)) = self.key_store.get_key(&key_info.key_id) {
+                if stored_public_key == public_key {
+                    return self.tpm_provider.sign(&private_key, data).await;
+                }
+            }
+        }
+        Err("No matching key found".into())
+    }
+
     pub fn remove_key(&mut self, key_id: &str) -> Result<(), Box<dyn Error>> {
         self.key_store.remove_key(key_id)?;
         Ok(())
@@ -426,18 +480,6 @@ impl WindowsSSHAgent {
 
     pub fn list_keys(&self) -> Vec<KeyInfo> {
         self.key_store.list_keys()
-    }
-
-    pub fn sign_data(&mut self, public_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-        // Find the key by its public key
-        for key_info in self.list_keys() {
-            if let Ok((private_key, stored_public_key)) = self.key_store.get_key(&key_info.key_id) {
-                if stored_public_key == public_key {
-                    return self.tpm_provider.sign(&private_key, data);
-                }
-            }
-        }
-        Err("No matching key found".into())
     }
 
     pub fn cleanup_expired_keys(&mut self) -> usize {
@@ -465,7 +507,7 @@ impl SSHAgentServer {
                     info!("New connection from {}", peer_addr);
                     
                     // Clone the required data for the handler
-                    let agent = Arc::new(Mutex::new(self.agent.clone()));
+                    let agent = Arc::new(tokio::sync::Mutex::new(self.agent.clone()));
                     
                     // Spawn a new task to handle the connection
                     tokio::spawn(async move {
@@ -483,7 +525,7 @@ impl SSHAgentServer {
 
     async fn handle_connection(
         socket: tokio::net::TcpStream,
-        agent: Arc<Mutex<WindowsSSHAgent>>,
+        agent: Arc<tokio::sync::Mutex<WindowsSSHAgent>>,
     ) -> Result<(), Box<dyn Error>> {
         let (mut reader, mut writer) = socket.into_split();
         let mut buffer = vec![0u8; 8192];
@@ -497,8 +539,8 @@ impl SSHAgentServer {
 
             // Process the request
             let response = {
-                let mut agent = agent.lock().map_err(|e| e.to_string())?;
-                Self::process_request(&mut agent, &buffer[..n])?
+                let mut agent = agent.lock().await;
+                Self::process_request(&mut agent, &buffer[..n]).await?
             };
 
             // Send response asynchronously
@@ -508,7 +550,7 @@ impl SSHAgentServer {
         Ok(())
     }
 
-    fn process_request(agent: &mut WindowsSSHAgent, data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    async fn process_request(agent: &mut WindowsSSHAgent, data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
         let message = match SSHAgentMessage::parse(data) {
             Ok(msg) => msg,
             Err(e) => {
@@ -557,11 +599,11 @@ impl SSHAgentServer {
                     message.payload[3],
                 ]) as usize;
 
-                let key_blob = &message.payload[4..4 + key_blob_len];
-                let data_to_sign = &message.payload[4 + key_blob_len..];
+                let key_blob = message.payload[4..4 + key_blob_len].to_vec();
+                let data_to_sign = message.payload[4 + key_blob_len..].to_vec();
 
                 // Sign the data
-                match agent.sign_data(key_blob, data_to_sign) {
+                match agent.sign_data(&key_blob, &data_to_sign).await {
                     Ok(signature) => {
                         let mut response = Vec::new();
                         response.extend_from_slice(&(signature.len() as u32).to_be_bytes());
@@ -588,14 +630,14 @@ impl SSHAgentServer {
     }
 }
 
-// Enable cloning for WindowsSSHAgent
+// Update Clone implementation for WindowsSSHAgent
 impl Clone for WindowsSSHAgent {
     fn clone(&self) -> Self {
         let mut master_key = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut master_key);
         
         Self {
-            tpm_provider: Box::new(MockTPMProvider),
+            tpm_provider: TPMProviderType::Mock(MockTPMProvider),
             key_store: KeyStore::new(&master_key),
         }
     }

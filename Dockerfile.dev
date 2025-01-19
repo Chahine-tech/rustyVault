@@ -1,0 +1,22 @@
+FROM nixos/nix:latest
+
+# Enable flakes
+RUN echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf
+
+# Create development directory
+WORKDIR /app
+
+# Copy only the Nix files first to cache the development environment
+COPY flake.nix flake.lock ./
+
+# Create the development environment and install git hooks
+RUN nix develop --build && \
+    # Configure git
+    git config --global user.email "dev@container" && \
+    git config --global user.name "Development Container"
+
+# Copy the rest of the project
+COPY . .
+
+# Set default command to enter development shell
+CMD ["nix", "develop"] 
