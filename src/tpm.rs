@@ -146,9 +146,9 @@ impl TPMProviderType {
 }
 
 pub trait TPMProvider: Send + Sync {
-    async fn initialize(&self) -> Result<(), Box<dyn Error>>;
-    async fn generate_key(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>;
-    async fn sign(&self, private_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>>;
+    fn initialize(&self) -> impl std::future::Future<Output = Result<(), Box<dyn Error>>> + Send;
+    fn generate_key(&self, key_type: KeyType) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send;
+    fn sign(&self, private_key: &[u8], data: &[u8]) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send;
 }
 
 fn is_ntstatus_failure(status: NTSTATUS) -> bool {
@@ -212,94 +212,100 @@ unsafe impl Send for WindowsTPMProvider {}
 unsafe impl Sync for WindowsTPMProvider {}
 
 impl TPMProvider for WindowsTPMProvider {
-    async fn initialize(&self) -> Result<(), Box<dyn Error>> {
-        info!("Initializing Windows TPM Provider");
-        self.check_tpm_status()?;
-        Ok(())
-    }
-
-    async fn generate_key(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
-        info!("Generating key for {:?}", key_type);
-        match key_type {
-            KeyType::Rsa2048 => generate_rsa_key(2048),
-            KeyType::Rsa4096 => generate_rsa_key(4096),
-            KeyType::Ed25519 => generate_ed25519_key(),
+    fn initialize(&self) -> impl std::future::Future<Output = Result<(), Box<dyn Error>>> + Send {
+        async move {
+            info!("Initializing Windows TPM Provider");
+            self.check_tpm_status()?;
+            Ok(())
         }
     }
 
-    async fn sign(&self, private_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-        let _ = private_key;
-        // Open SHA256 algorithm provider
-        let mut alg_handle = BCRYPT_ALG_HANDLE::default();
-        let status = unsafe {
-            BCryptOpenAlgorithmProvider(
-                &mut alg_handle,
-                BCRYPT_SHA256_ALGORITHM,
-                None,
-                BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS::default(),
-            )
-        };
-
-        if is_ntstatus_failure(status) {
-            return Err(format!("Failed to open algorithm provider: {:?}", status.0).into());
+    fn generate_key(&self, key_type: KeyType) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send {
+        async move {
+            info!("Generating key for {:?}", key_type);
+            match key_type {
+                KeyType::Rsa2048 => generate_rsa_key(2048),
+                KeyType::Rsa4096 => generate_rsa_key(4096),
+                KeyType::Ed25519 => generate_ed25519_key(),
+            }
         }
+    }
 
-        // Create hash object
-        let mut hash_handle = BCRYPT_HASH_HANDLE::default();
-        let hash_status = unsafe {
-            BCryptCreateHash(
-                alg_handle,
-                &mut hash_handle,
-                None, // No hash object buffer
-                None, // No secret
-                0,    // No secret length
-            )
-        };
+    fn sign(&self, private_key: &[u8], data: &[u8]) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send {
+        async move {
+            let _ = private_key;
+            // Open SHA256 algorithm provider
+            let mut alg_handle = BCRYPT_ALG_HANDLE::default();
+            let status = unsafe {
+                BCryptOpenAlgorithmProvider(
+                    &mut alg_handle,
+                    BCRYPT_SHA256_ALGORITHM,
+                    None,
+                    BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS::default(),
+                )
+            };
 
-        if is_ntstatus_failure(hash_status) {
-            unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
-            return Err(format!("Failed to create hash: {:?}", hash_status.0).into());
-        }
+            if is_ntstatus_failure(status) {
+                return Err(format!("Failed to open algorithm provider: {:?}", status.0).into());
+            }
 
-        // Hash the data
-        let hash_data_status = unsafe {
-            BCryptHashData(
-                hash_handle,
-                data, // Slice instead of pointer
-                0,    // Flags
-            )
-        };
+            // Create hash object
+            let mut hash_handle = BCRYPT_HASH_HANDLE::default();
+            let hash_status = unsafe {
+                BCryptCreateHash(
+                    alg_handle,
+                    &mut hash_handle,
+                    None, // No hash object buffer
+                    None, // No secret
+                    0,    // No secret length
+                )
+            };
 
-        if is_ntstatus_failure(hash_data_status) {
+            if is_ntstatus_failure(hash_status) {
+                unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
+                return Err(format!("Failed to create hash: {:?}", hash_status.0).into());
+            }
+
+            // Hash the data
+            let hash_data_status = unsafe {
+                BCryptHashData(
+                    hash_handle,
+                    data, // Slice instead of pointer
+                    0,    // Flags
+                )
+            };
+
+            if is_ntstatus_failure(hash_data_status) {
+                unsafe {
+                    BCryptDestroyHash(hash_handle);
+                    BCryptCloseAlgorithmProvider(alg_handle, 0)
+                };
+                return Err(format!("Failed to hash data: {:?}", hash_data_status.0).into());
+            }
+
+            // Finalize hash
+            let mut hash_result = vec![0u8; 32]; // SHA256 produces 32-byte hash
+            let finish_status = unsafe {
+                BCryptFinishHash(
+                    hash_handle,
+                    &mut hash_result, // Slice reference
+                    0,                // Flags
+                )
+            };
+
+            // Cleanup
             unsafe {
                 BCryptDestroyHash(hash_handle);
                 BCryptCloseAlgorithmProvider(alg_handle, 0)
             };
-            return Err(format!("Failed to hash data: {:?}", hash_data_status.0).into());
+
+            if is_ntstatus_failure(finish_status) {
+                return Err(format!("Failed to finish hash: {:?}", finish_status.0).into());
+            }
+
+            info!("Successfully performed signing operation");
+            Ok(hash_result)
         }
-
-        // Finalize hash
-        let mut hash_result = vec![0u8; 32]; // SHA256 produces 32-byte hash
-        let finish_status = unsafe {
-            BCryptFinishHash(
-                hash_handle,
-                &mut hash_result, // Slice reference
-                0,                // Flags
-            )
-        };
-
-        // Cleanup
-        unsafe {
-            BCryptDestroyHash(hash_handle);
-            BCryptCloseAlgorithmProvider(alg_handle, 0)
-        };
-
-        if is_ntstatus_failure(finish_status) {
-            return Err(format!("Failed to finish hash: {:?}", finish_status.0).into());
-        }
-
-        info!("Successfully performed signing operation");
-        Ok(hash_result)
     }
 }
 
@@ -331,22 +337,28 @@ fn generate_ed25519_key() -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
 pub struct MockTPMProvider;
 
 impl TPMProvider for MockTPMProvider {
-    async fn initialize(&self) -> Result<(), Box<dyn Error>> {
-        info!("Initializing Mock TPM Provider");
-        Ok(())
-    }
-
-    async fn generate_key(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
-        info!("Generating mock key for {:?}", key_type);
-        match key_type {
-            KeyType::Rsa2048 | KeyType::Rsa4096 => generate_rsa_key(2048),
-            KeyType::Ed25519 => generate_ed25519_key(),
+    fn initialize(&self) -> impl std::future::Future<Output = Result<(), Box<dyn Error>>> + Send {
+        async move {
+            info!("Initializing Mock TPM Provider");
+            Ok(())
         }
     }
 
-    async fn sign(&self, _private_key: &[u8], _data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-        info!("Performing mock signature operation");
-        Ok(_data.to_vec())
+    fn generate_key(&self, key_type: KeyType) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send {
+        async move {
+            info!("Generating mock key for {:?}", key_type);
+            match key_type {
+                KeyType::Rsa2048 | KeyType::Rsa4096 => generate_rsa_key(2048),
+                KeyType::Ed25519 => generate_ed25519_key(),
+            }
+        }
+    }
+
+    fn sign(&self, _private_key: &[u8], _data: &[u8]) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send {
+        async move {
+            info!("Performing mock signature operation");
+            Ok(_data.to_vec())
+        }
     }
 }
 
