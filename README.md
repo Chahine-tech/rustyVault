@@ -36,9 +36,9 @@ A secure SSH agent implementation with TPM (Trusted Platform Module) integration
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/yourusername/tpm-ssh-agent.git
-   cd tpm-ssh-agent
-   ```
+    git clone https://github.com/Chahine-tech/rustyVault.git
+    cd rustyVault
+    ```
 
 2. **Development Environment Setup**:
    
