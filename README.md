@@ -2,23 +2,6 @@
 
 A secure SSH agent implementation with TPM (Trusted Platform Module) integration for Windows, providing enhanced security for SSH key management.
 
-<details>
-<summary>Show ASCII Banner</summary>
-
-```txt
-<!-- The content below is from docs/banner.txt -->
-  _____  ____  __  __   ____  ____  _   _           _                    _   
- |_   _||  _ \|  \/  | / ___||  _ \| | | |         / \    __ _   ___  _| |_ 
-   | |  | |_) | |\/| | \___ \| |_) | |_| |  _____ / _ \  / _` | / _ \|_   _|
-   | |  |  __/| |  | |  ___) |  __/|  _  | |_____/ ___ \| (_| ||  __/  |_|  
-   |_|  |_|   |_|  |_| |____/|_|   |_| |_|     /_/   \_\\__, | \___|       
-                                                         |___/               
-=============================================================================
-                    Secure SSH Agent with TPM Integration
-=============================================================================
-```
-</details>
-
 ## Features
 
 - 🔐 **TPM Integration**: Secure key operations using Windows TPM
