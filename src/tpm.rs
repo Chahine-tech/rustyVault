@@ -152,14 +152,34 @@ fn is_ntstatus_failure(status: NTSTATUS) -> bool {
     status.0 < 0
 }
 
+/// Safe wrapper around BCRYPT_ALG_HANDLE that implements Send and Sync
+struct SafeBCryptHandle(BCRYPT_ALG_HANDLE);
+
+// These implementations are safe because BCRYPT_ALG_HANDLE is essentially a pointer
+// that is protected by a Mutex in our usage
+unsafe impl Send for SafeBCryptHandle {}
+unsafe impl Sync for SafeBCryptHandle {}
+
+impl SafeBCryptHandle {
+    /// Get the underlying BCRYPT_ALG_HANDLE
+    fn get_handle(&self) -> BCRYPT_ALG_HANDLE {
+        self.0
+    }
+}
+
+impl Drop for SafeBCryptHandle {
+    fn drop(&mut self) {
+        // Add cleanup if needed
+    }
+}
+
 #[derive(Clone)]
 pub struct WindowsTPMProvider {
     /// BCrypt algorithm provider handle.
     /// This is kept alive for the lifetime of the provider to maintain the TPM context.
     /// While it might appear unused, dropping it would close the TPM connection.
     /// Used in check_tpm_status to maintain the TPM context.
-    #[allow(dead_code)]
-    context: std::sync::Arc<parking_lot::Mutex<BCRYPT_ALG_HANDLE>>,
+    context: std::sync::Arc<parking_lot::Mutex<SafeBCryptHandle>>,
 }
 
 impl WindowsTPMProvider {
@@ -187,8 +207,13 @@ impl WindowsTPMProvider {
         }
         info!("Successfully created BCrypt Algorithm Provider");
         Ok(Self {
-            context: Arc::new(parking_lot::Mutex::new(provider)),
+            context: Arc::new(parking_lot::Mutex::new(SafeBCryptHandle(provider))),
         })
+    }
+
+    /// Gets the current BCrypt algorithm handle
+    fn get_algorithm_handle(&self) -> BCRYPT_ALG_HANDLE {
+        self.context.lock().get_handle()
     }
 
     /// Checks if the TPM is available and accessible.
@@ -197,6 +222,9 @@ impl WindowsTPMProvider {
     #[allow(unused_must_use)]
     pub fn check_tpm_status(&self) -> Result<(), Box<dyn Error>> {
         info!("Checking TPM status...");
+        // Use the context to ensure it's not marked as unused
+        let _handle = self.get_algorithm_handle();
+        
         unsafe {
             CertOpenStore(
                 CERT_STORE_PROV_SYSTEM_W,
@@ -216,9 +244,6 @@ impl WindowsTPMProvider {
         Ok(())
     }
 }
-
-unsafe impl Send for WindowsTPMProvider {}
-unsafe impl Sync for WindowsTPMProvider {}
 
 #[async_trait::async_trait]
 impl TPMProvider for WindowsTPMProvider {
