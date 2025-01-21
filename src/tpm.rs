@@ -224,7 +224,7 @@ impl WindowsTPMProvider {
         info!("Checking TPM status...");
         // Use the context to ensure it's not marked as unused
         let _handle = self.get_algorithm_handle();
-        
+
         unsafe {
             CertOpenStore(
                 CERT_STORE_PROV_SYSTEM_W,
