@@ -17,6 +17,8 @@ use windows::Win32::Security::Cryptography::{
     BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, BCRYPT_SHA256_ALGORITHM, CERT_OPEN_STORE_FLAGS,
     CERT_QUERY_ENCODING_TYPE, CERT_STORE_PROV_SYSTEM_W,
 };
+use parking_lot;
+use async_trait;
 
 // SSH Agent Protocol Message Types
 #[derive(Debug, Clone, Copy)]
@@ -139,17 +141,11 @@ impl TPMProviderType {
     }
 }
 
+#[async_trait::async_trait]
 pub trait TPMProvider: Send + Sync {
-    fn initialize(&self) -> impl std::future::Future<Output = Result<(), Box<dyn Error>>> + Send;
-    fn generate_key(
-        &self,
-        key_type: KeyType,
-    ) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send;
-    fn sign(
-        &self,
-        private_key: &[u8],
-        data: &[u8],
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send;
+    async fn initialize(&self) -> Result<(), Box<dyn Error>>;
+    async fn generate_key(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>;
+    async fn sign(&self, private_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>>;
 }
 
 fn is_ntstatus_failure(status: NTSTATUS) -> bool {
@@ -163,7 +159,7 @@ pub struct WindowsTPMProvider {
     /// While it might appear unused, dropping it would close the TPM connection.
     /// Used in check_tpm_status to maintain the TPM context.
     #[allow(dead_code)]
-    context: Arc<tokio::sync::Mutex<BCRYPT_ALG_HANDLE>>,
+    context: std::sync::Arc<parking_lot::Mutex<BCRYPT_ALG_HANDLE>>,
 }
 
 impl WindowsTPMProvider {
@@ -191,7 +187,7 @@ impl WindowsTPMProvider {
         }
         info!("Successfully created BCrypt Algorithm Provider");
         Ok(Self {
-            context: Arc::new(tokio::sync::Mutex::new(provider)),
+            context: Arc::new(parking_lot::Mutex::new(provider)),
         })
     }
 
@@ -224,67 +220,52 @@ impl WindowsTPMProvider {
 unsafe impl Send for WindowsTPMProvider {}
 unsafe impl Sync for WindowsTPMProvider {}
 
+#[async_trait::async_trait]
 impl TPMProvider for WindowsTPMProvider {
-    fn initialize(&self) -> impl std::future::Future<Output = Result<(), Box<dyn Error>>> + Send {
-        async move {
-            info!("Initializing Windows TPM Provider");
-            self.check_tpm_status()?;
-            Ok(())
+    async fn initialize(&self) -> Result<(), Box<dyn Error>> {
+        info!("Initializing Windows TPM Provider");
+        self.check_tpm_status()?;
+        Ok(())
+    }
+
+    async fn generate_key(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
+        info!("Generating key for {:?}", key_type);
+        match key_type {
+            KeyType::Rsa2048 => generate_rsa_key(2048),
+            KeyType::Rsa4096 => generate_rsa_key(4096),
+            KeyType::Ed25519 => generate_ed25519_key(),
         }
     }
 
-    fn generate_key(
-        &self,
-        key_type: KeyType,
-    ) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send {
-        async move {
-            info!("Generating key for {:?}", key_type);
-            match key_type {
-                KeyType::Rsa2048 => generate_rsa_key(2048),
-                KeyType::Rsa4096 => generate_rsa_key(4096),
-                KeyType::Ed25519 => generate_ed25519_key(),
-            }
+    async fn sign(&self, private_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+        // Try to parse as Ed25519 key first
+        if let Ok(key_pair) = Ed25519KeyPair::from_pkcs8(private_key) {
+            let signature = key_pair.sign(data);
+            info!("Successfully performed Ed25519 signing operation");
+            return Ok(signature.as_ref().to_vec());
         }
-    }
 
-    fn sign(
-        &self,
-        private_key: &[u8],
-        data: &[u8],
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send {
-        async move {
-            // Try to parse as Ed25519 key first
-            if let Ok(key_pair) = Ed25519KeyPair::from_pkcs8(private_key) {
-                // Ed25519 signing
-                let signature = key_pair.sign(data);
-                info!("Successfully performed Ed25519 signing operation");
-                return Ok(signature.as_ref().to_vec());
-            }
+        // If not Ed25519, try RSA
+        let mut context = Context::new(&SHA256);
+        context.update(data);
+        let digest = context.finish();
 
-            // If not Ed25519, try RSA
-            // Create a SHA-256 context for the data to be signed
-            let mut context = Context::new(&SHA256);
-            context.update(data);
-            let digest = context.finish();
+        // Parse the private key as RSA
+        let key_pair = RsaKeyPair::from_der(private_key)
+            .map_err(|e| format!("Failed to parse RSA key: {:?}", e))?;
 
-            // Parse the private key as RSA
-            let key_pair = RsaKeyPair::from_der(private_key)
-                .map_err(|e| format!("Failed to parse RSA key: {:?}", e))?;
+        let mut signature = vec![0; key_pair.public().modulus_len()];
+        key_pair
+            .sign(
+                &signature::RSA_PKCS1_SHA256,
+                &SystemRandom::new(),
+                digest.as_ref(),
+                &mut signature,
+            )
+            .map_err(|e| format!("Failed to sign data: {:?}", e))?;
 
-            // Sign the digest with RSA
-            let mut signature = vec![0; key_pair.public().modulus_len()];
-            key_pair
-                .sign(
-                    &signature::RSA_PKCS1_SHA256,
-                    &SystemRandom::new(),
-                    digest.as_ref(),
-                    &mut signature,
-                )
-                .map_err(|e| format!("Failed to sign data: {:?}", e))?;
-
-            info!("Successfully performed RSA signing operation");
-            Ok(signature)
-        }
+        info!("Successfully performed RSA signing operation");
+        Ok(signature)
     }
 }
 
@@ -326,64 +307,52 @@ fn generate_ed25519_key() -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
 #[derive(Clone)]
 pub struct MockTPMProvider;
 
+#[async_trait::async_trait]
 impl TPMProvider for MockTPMProvider {
-    fn initialize(&self) -> impl std::future::Future<Output = Result<(), Box<dyn Error>>> + Send {
-        async move {
-            info!("Initializing Mock TPM Provider");
-            Ok(())
+    async fn initialize(&self) -> Result<(), Box<dyn Error>> {
+        info!("Initializing Mock TPM Provider");
+        Ok(())
+    }
+
+    async fn generate_key(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
+        info!("Generating mock key for {:?}", key_type);
+        match key_type {
+            KeyType::Rsa2048 | KeyType::Rsa4096 => generate_rsa_key(2048),
+            KeyType::Ed25519 => generate_ed25519_key(),
         }
     }
 
-    fn generate_key(
-        &self,
-        key_type: KeyType,
-    ) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send {
-        async move {
-            info!("Generating mock key for {:?}", key_type);
-            match key_type {
-                KeyType::Rsa2048 | KeyType::Rsa4096 => generate_rsa_key(2048),
-                KeyType::Ed25519 => generate_ed25519_key(),
-            }
+    async fn sign(&self, private_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+        info!("Performing mock signature operation");
+
+        // Try to parse as Ed25519 key first
+        if let Ok(key_pair) = Ed25519KeyPair::from_pkcs8(private_key) {
+            let signature = key_pair.sign(data);
+            info!("Successfully performed mock Ed25519 signing operation");
+            return Ok(signature.as_ref().to_vec());
         }
-    }
 
-    fn sign(
-        &self,
-        private_key: &[u8],
-        data: &[u8],
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send {
-        async move {
-            info!("Performing mock signature operation");
+        // If not Ed25519, try RSA
+        let mut context = Context::new(&SHA256);
+        context.update(data);
+        let digest = context.finish();
 
-            // Try to parse as Ed25519 key first
-            if let Ok(key_pair) = Ed25519KeyPair::from_pkcs8(private_key) {
-                let signature = key_pair.sign(data);
-                info!("Successfully performed mock Ed25519 signing operation");
-                return Ok(signature.as_ref().to_vec());
-            }
+        // Parse the private key as RSA
+        let key_pair = RsaKeyPair::from_der(private_key)
+            .map_err(|e| format!("Failed to parse RSA key in mock: {:?}", e))?;
 
-            // If not Ed25519, try RSA
-            let mut context = Context::new(&SHA256);
-            context.update(data);
-            let digest = context.finish();
+        let mut signature = vec![0; key_pair.public().modulus_len()];
+        key_pair
+            .sign(
+                &signature::RSA_PKCS1_SHA256,
+                &SystemRandom::new(),
+                digest.as_ref(),
+                &mut signature,
+            )
+            .map_err(|e| format!("Mock signing failed: {:?}", e))?;
 
-            // Parse the private key as RSA
-            let key_pair = RsaKeyPair::from_der(private_key)
-                .map_err(|e| format!("Failed to parse RSA key in mock: {:?}", e))?;
-
-            let mut signature = vec![0; key_pair.public().modulus_len()];
-            key_pair
-                .sign(
-                    &signature::RSA_PKCS1_SHA256,
-                    &SystemRandom::new(),
-                    digest.as_ref(),
-                    &mut signature,
-                )
-                .map_err(|e| format!("Mock signing failed: {:?}", e))?;
-
-            info!("Successfully performed mock RSA signing operation");
-            Ok(signature)
-        }
+        info!("Successfully performed mock RSA signing operation");
+        Ok(signature)
     }
 }
 

@@ -183,18 +183,18 @@ impl KeyStore {
             .unwrap()
             .as_secs();
 
-        let expired: Vec<String> = self
+        let expired_keys: Vec<String> = self
             .keys
             .iter()
-            .filter(|(_, k)| k.expires_at.map_or(false, |exp| now >= exp))
+            .filter(|(_, k)| k.expires_at.is_some_and(|exp| now >= exp))
             .map(|(id, _)| id.clone())
             .collect();
 
-        for key_id in &expired {
-            self.keys.remove(key_id);
+        let count = expired_keys.len();
+        for key_id in expired_keys {
+            self.keys.remove(&key_id);
         }
-
-        expired.len()
+        count
     }
 }
 

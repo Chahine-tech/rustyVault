@@ -57,12 +57,14 @@ name = "agent"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "async-trait",
  "base64",
  "colored",
  "ed25519-dalek",
  "env_logger",
  "figlet-rs",
  "log",
+ "parking_lot",
  "rand",
  "rand_chacha",
  "rand_core",
@@ -133,6 +135,17 @@ dependencies = [
  "anstyle",
  "once_cell",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "async-trait"
+version = "0.1.85"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f934833b4b7233644e5848f235df3f57ed8c80f1528a26c3dfa13d2147fa056"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
