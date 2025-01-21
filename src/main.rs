@@ -1,32 +1,40 @@
+use colored::*;
+use figlet_rs::FIGfont;
 use log::{error, info};
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
-use windows_ssh_agent::{KeyType, SSHAgentServer, WindowsSSHAgent};
-use colored::*;
-use figlet_rs::FIGfont;
 use tokio::signal;
+use windows_ssh_agent::{KeyType, SSHAgentServer, WindowsSSHAgent};
 
 fn print_banner() {
     let standard_font = FIGfont::standard().unwrap();
     let figure = standard_font.convert("TPM SSH Agent").unwrap();
     println!("\n{}", figure.to_string().bright_cyan());
-    println!("{}", "Secure SSH Agent with TPM Integration".bright_yellow());
+    println!(
+        "{}",
+        "Secure SSH Agent with TPM Integration".bright_yellow()
+    );
     println!("{}", "=================================".bright_yellow());
 }
 
 async fn cleanup_task(cleanup_server: Arc<tokio::sync::Mutex<SSHAgentServer>>) {
     loop {
         tokio::time::sleep(Duration::from_secs(3600)).await;
-        
+
         let result = async {
             let mut server = cleanup_server.lock().await;
             let cleaned = server.agent.cleanup_expired_keys();
             if cleaned > 0 {
-                info!("{} {}", "Cleaned up".green(), format!("{} expired keys", cleaned).white());
+                info!(
+                    "{} {}",
+                    "Cleaned up".green(),
+                    format!("{} expired keys", cleaned).white()
+                );
             }
             Ok::<_, Box<dyn Error + Send + Sync>>(())
-        }.await;
+        }
+        .await;
 
         if let Err(e) = result {
             error!("{} {:?}", "Error in cleanup task:".red().bold(), e);
@@ -57,7 +65,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .generate_key(KeyType::Rsa2048)
         .await
         .map_err(|e| {
-            error!("{} {:?}", "Failed to generate RSA 2048 key:".red().bold(), e);
+            error!(
+                "{} {:?}",
+                "Failed to generate RSA 2048 key:".red().bold(),
+                e
+            );
             e
         })?;
 
@@ -75,7 +87,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     ssh_agent.add_key(rsa_private_key, rsa_public_key).await?;
 
     info!("{}", "Adding Ed25519 key...".green());
-    ssh_agent.add_key(ed25519_private_key, ed25519_public_key).await?;
+    ssh_agent
+        .add_key(ed25519_private_key, ed25519_public_key)
+        .await?;
 
     // List all keys
     println!("\n{}", "🔑 Current keys in store:".bright_yellow());
@@ -95,7 +109,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tokio::spawn(cleanup_task(cleanup_server));
 
     info!("{}", "Starting SSH agent server...".green());
-    
+
     // Handle graceful shutdown with Ctrl+C
     let server_clone = Arc::clone(&server);
     tokio::spawn(async move {
@@ -111,7 +125,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             info!("{}", "Shutting down SSH agent...".yellow());
         }
         Err(err) => {
-            error!("{} {:?}", "Unable to listen for shutdown signal:".red().bold(), err);
+            error!(
+                "{} {:?}",
+                "Unable to listen for shutdown signal:".red().bold(),
+                err
+            );
         }
     }
 

@@ -18,20 +18,28 @@ async fn test_windows_ssh_agent_creation() -> Result<(), Box<dyn Error>> {
 async fn test_key_generation_and_addition() -> Result<(), Box<dyn Error>> {
     let mut ssh_agent = create_test_agent()?;
 
-    let (rsa_private_key, rsa_public_key) =
-        ssh_agent.tpm_provider.generate_key(KeyType::Rsa2048).await?;
+    let (rsa_private_key, rsa_public_key) = ssh_agent
+        .tpm_provider
+        .generate_key(KeyType::Rsa2048)
+        .await?;
 
-    ssh_agent.add_key(rsa_private_key.clone(), rsa_public_key.clone()).await?;
+    ssh_agent
+        .add_key(rsa_private_key.clone(), rsa_public_key.clone())
+        .await?;
     assert_eq!(
         ssh_agent.list_keys().len(),
         1,
         "SSH agent should have one key after addition"
     );
 
-    let (ed25519_private_key, ed25519_public_key) =
-        ssh_agent.tpm_provider.generate_key(KeyType::Ed25519).await?;
+    let (ed25519_private_key, ed25519_public_key) = ssh_agent
+        .tpm_provider
+        .generate_key(KeyType::Ed25519)
+        .await?;
 
-    ssh_agent.add_key(ed25519_private_key, ed25519_public_key).await?;
+    ssh_agent
+        .add_key(ed25519_private_key, ed25519_public_key)
+        .await?;
     assert_eq!(
         ssh_agent.list_keys().len(),
         2,
@@ -44,18 +52,20 @@ async fn test_key_generation_and_addition() -> Result<(), Box<dyn Error>> {
 #[tokio::test]
 async fn test_key_signing() -> Result<(), Box<dyn Error>> {
     let mut ssh_agent = create_test_agent()?;
-    
+
     let (ed25519_private_key, ed25519_public_key) = ssh_agent
         .tpm_provider
         .generate_key(KeyType::Ed25519)
         .await?;
-    
-    ssh_agent.add_key(ed25519_private_key.clone(), ed25519_public_key.clone()).await?;
+
+    ssh_agent
+        .add_key(ed25519_private_key.clone(), ed25519_public_key.clone())
+        .await?;
 
     let test_data = b"Hello, SSH Agent!";
-    
+
     let signature = ssh_agent.sign_data(&ed25519_public_key, test_data).await?;
-    
+
     assert!(!signature.is_empty(), "Signature should not be empty");
 
     Ok(())
@@ -77,43 +87,69 @@ async fn test_sign_with_nonexistent_key() -> Result<(), Box<dyn Error>> {
 #[tokio::test]
 async fn test_key_removal() -> Result<(), Box<dyn Error>> {
     let mut ssh_agent = create_test_agent()?;
-    
-    let (private_key, public_key) = ssh_agent.tpm_provider.generate_key(KeyType::Ed25519).await?;
+
+    let (private_key, public_key) = ssh_agent
+        .tpm_provider
+        .generate_key(KeyType::Ed25519)
+        .await?;
     ssh_agent.add_key(private_key, public_key).await?;
-    
+
     let key_id = ssh_agent.list_keys()[0].key_id.clone();
-    assert_eq!(ssh_agent.list_keys().len(), 1, "Should have one key before removal");
-    
+    assert_eq!(
+        ssh_agent.list_keys().len(),
+        1,
+        "Should have one key before removal"
+    );
+
     ssh_agent.remove_key(&key_id)?;
-    assert_eq!(ssh_agent.list_keys().len(), 0, "Should have no keys after removal");
-    
+    assert_eq!(
+        ssh_agent.list_keys().len(),
+        0,
+        "Should have no keys after removal"
+    );
+
     Ok(())
 }
 
 #[tokio::test]
 async fn test_key_expiration() -> Result<(), Box<dyn Error>> {
     let mut ssh_agent = create_test_agent()?;
-    
+
     // First test: Add a key with no expiration
-    let (private_key, public_key) = ssh_agent.tpm_provider.generate_key(KeyType::Ed25519).await?;
+    let (private_key, public_key) = ssh_agent
+        .tpm_provider
+        .generate_key(KeyType::Ed25519)
+        .await?;
     ssh_agent.add_key(private_key, public_key).await?;
-    
+
     let cleaned = ssh_agent.cleanup_expired_keys();
-    assert_eq!(cleaned, 0, "No keys should be cleaned up for non-expiring keys");
+    assert_eq!(
+        cleaned, 0,
+        "No keys should be cleaned up for non-expiring keys"
+    );
     assert_eq!(ssh_agent.list_keys().len(), 1, "Key should still exist");
-    
+
     // Second test: Add a key with immediate expiration
-    let (private_key, public_key) = ssh_agent.tpm_provider.generate_key(KeyType::Ed25519).await?;
-    
+    let (private_key, public_key) = ssh_agent
+        .tpm_provider
+        .generate_key(KeyType::Ed25519)
+        .await?;
+
     // Add a key that expires immediately (TTL = 0)
-    ssh_agent.add_key_with_ttl(private_key, public_key, 0).await?;
-    
+    ssh_agent
+        .add_key_with_ttl(private_key, public_key, 0)
+        .await?;
+
     // Sleep for a moment to ensure the expiration time has passed
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    
+
     let cleaned = ssh_agent.cleanup_expired_keys();
     assert_eq!(cleaned, 1, "One key should have been cleaned up");
-    assert_eq!(ssh_agent.list_keys().len(), 1, "Only expired key should be removed");
-    
+    assert_eq!(
+        ssh_agent.list_keys().len(),
+        1,
+        "Only expired key should be removed"
+    );
+
     Ok(())
 }

@@ -43,10 +43,10 @@ pub struct KeyStore {
 
 impl KeyStore {
     pub fn new(master_key: &[u8; 32]) -> Self {
-        let unbound_key = UnboundKey::new(&aead::AES_256_GCM, master_key)
-            .expect("Failed to create unbound key");
+        let unbound_key =
+            UnboundKey::new(&aead::AES_256_GCM, master_key).expect("Failed to create unbound key");
         let key = LessSafeKey::new(unbound_key);
-        
+
         Self {
             key,
             keys: HashMap::new(),
@@ -138,7 +138,7 @@ impl KeyStore {
 
         // Create mutable buffer for decryption
         let mut decryption_buffer = encrypted_data.to_vec();
-        
+
         // Decrypt the private key
         let private_key = self
             .key

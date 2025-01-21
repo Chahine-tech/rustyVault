@@ -13,14 +13,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Security::Cryptography::{
-    BCryptOpenAlgorithmProvider,
-    BCRYPT_ALG_HANDLE,
-    BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS,
-    BCRYPT_SHA256_ALGORITHM,
-    CertOpenStore,
-    CERT_STORE_PROV_SYSTEM_W,
-    CERT_QUERY_ENCODING_TYPE,
-    CERT_OPEN_STORE_FLAGS,
+    BCryptOpenAlgorithmProvider, CertOpenStore, BCRYPT_ALG_HANDLE,
+    BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, BCRYPT_SHA256_ALGORITHM, CERT_OPEN_STORE_FLAGS,
+    CERT_QUERY_ENCODING_TYPE, CERT_STORE_PROV_SYSTEM_W,
 };
 
 // SSH Agent Protocol Message Types
@@ -63,9 +58,13 @@ impl SSHAgentMessage {
 
         // Next byte is the message type
         let message_type = match data[4] {
-            x if x == SSHAgentMessageType::SSHAgentIdentities as u8 => SSHAgentMessageType::SSHAgentIdentities,
+            x if x == SSHAgentMessageType::SSHAgentIdentities as u8 => {
+                SSHAgentMessageType::SSHAgentIdentities
+            }
             x if x == SSHAgentMessageType::SSHAgentSign as u8 => SSHAgentMessageType::SSHAgentSign,
-            x if x == SSHAgentMessageType::SSHAgentRemoveAll as u8 => SSHAgentMessageType::SSHAgentRemoveAll,
+            x if x == SSHAgentMessageType::SSHAgentRemoveAll as u8 => {
+                SSHAgentMessageType::SSHAgentRemoveAll
+            }
             x => return Err(SSHAgentError::InvalidMessageType(x)),
         };
 
@@ -81,14 +80,14 @@ impl SSHAgentMessage {
     fn create_response(message_type: SSHAgentMessageType, payload: Vec<u8>) -> Vec<u8> {
         let length = (payload.len() + 1) as u32;
         let mut response = Vec::with_capacity(length as usize + 4);
-        
+
         // Add length in network byte order
         response.extend_from_slice(&length.to_be_bytes());
         // Add message type
         response.push(message_type as u8);
         // Add payload
         response.extend_from_slice(&payload);
-        
+
         response
     }
 
@@ -122,7 +121,10 @@ impl TPMProviderType {
         }
     }
 
-    pub async fn generate_key(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
+    pub async fn generate_key(
+        &self,
+        key_type: KeyType,
+    ) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
         match self {
             TPMProviderType::Windows(provider) => provider.generate_key(key_type).await,
             TPMProviderType::Mock(provider) => provider.generate_key(key_type).await,
@@ -139,8 +141,15 @@ impl TPMProviderType {
 
 pub trait TPMProvider: Send + Sync {
     fn initialize(&self) -> impl std::future::Future<Output = Result<(), Box<dyn Error>>> + Send;
-    fn generate_key(&self, key_type: KeyType) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send;
-    fn sign(&self, private_key: &[u8], data: &[u8]) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send;
+    fn generate_key(
+        &self,
+        key_type: KeyType,
+    ) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send;
+    fn sign(
+        &self,
+        private_key: &[u8],
+        data: &[u8],
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send;
 }
 
 fn is_ntstatus_failure(status: NTSTATUS) -> bool {
@@ -224,7 +233,10 @@ impl TPMProvider for WindowsTPMProvider {
         }
     }
 
-    fn generate_key(&self, key_type: KeyType) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send {
+    fn generate_key(
+        &self,
+        key_type: KeyType,
+    ) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send {
         async move {
             info!("Generating key for {:?}", key_type);
             match key_type {
@@ -235,7 +247,11 @@ impl TPMProvider for WindowsTPMProvider {
         }
     }
 
-    fn sign(&self, private_key: &[u8], data: &[u8]) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send {
+    fn sign(
+        &self,
+        private_key: &[u8],
+        data: &[u8],
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send {
         async move {
             // Try to parse as Ed25519 key first
             if let Ok(key_pair) = Ed25519KeyPair::from_pkcs8(private_key) {
@@ -244,23 +260,28 @@ impl TPMProvider for WindowsTPMProvider {
                 info!("Successfully performed Ed25519 signing operation");
                 return Ok(signature.as_ref().to_vec());
             }
-            
+
             // If not Ed25519, try RSA
             // Create a SHA-256 context for the data to be signed
             let mut context = Context::new(&SHA256);
             context.update(data);
             let digest = context.finish();
-            
+
             // Parse the private key as RSA
             let key_pair = RsaKeyPair::from_der(private_key)
                 .map_err(|e| format!("Failed to parse RSA key: {:?}", e))?;
-            
+
             // Sign the digest with RSA
             let mut signature = vec![0; key_pair.public().modulus_len()];
             key_pair
-                .sign(&signature::RSA_PKCS1_SHA256, &SystemRandom::new(), digest.as_ref(), &mut signature)
+                .sign(
+                    &signature::RSA_PKCS1_SHA256,
+                    &SystemRandom::new(),
+                    digest.as_ref(),
+                    &mut signature,
+                )
                 .map_err(|e| format!("Failed to sign data: {:?}", e))?;
-            
+
             info!("Successfully performed RSA signing operation");
             Ok(signature)
         }
@@ -269,35 +290,35 @@ impl TPMProvider for WindowsTPMProvider {
 
 fn generate_rsa_key(bits: usize) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
     info!("Attempting to generate RSA {} key", bits);
-    
+
     // Generate RSA key pair using the rsa crate
     let mut rng = rand::thread_rng();
     let private_key = RsaPrivateKey::new(&mut rng, bits)?;
     let public_key = RsaPublicKey::from(&private_key);
-    
+
     // Convert to DER format
     let private_key_der = private_key.to_pkcs1_der()?.as_bytes().to_vec();
     let public_key_der = public_key.to_pkcs1_der()?.as_bytes().to_vec();
-    
+
     info!("Successfully generated RSA {} key", bits);
     Ok((private_key_der, public_key_der))
 }
 
 fn generate_ed25519_key() -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
     info!("Attempting to generate Ed25519 key");
-    
+
     // Use ring's secure random number generator and Ed25519 implementation
     let rng = SystemRandom::new();
     let pkcs8_bytes = Ed25519KeyPair::generate_pkcs8(&rng)
         .map_err(|e| format!("Failed to generate Ed25519 key: {:?}", e))?;
-    
+
     // Create the key pair from the generated bytes
     let key_pair = Ed25519KeyPair::from_pkcs8(pkcs8_bytes.as_ref())
         .map_err(|e| format!("Failed to parse Ed25519 key: {:?}", e))?;
-    
+
     // Get the public key
     let public_key = key_pair.public_key().as_ref().to_vec();
-    
+
     info!("Successfully generated Ed25519 key");
     Ok((pkcs8_bytes.as_ref().to_vec(), public_key))
 }
@@ -313,7 +334,10 @@ impl TPMProvider for MockTPMProvider {
         }
     }
 
-    fn generate_key(&self, key_type: KeyType) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send {
+    fn generate_key(
+        &self,
+        key_type: KeyType,
+    ) -> impl std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>> + Send {
         async move {
             info!("Generating mock key for {:?}", key_type);
             match key_type {
@@ -323,31 +347,40 @@ impl TPMProvider for MockTPMProvider {
         }
     }
 
-    fn sign(&self, private_key: &[u8], data: &[u8]) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send {
+    fn sign(
+        &self,
+        private_key: &[u8],
+        data: &[u8],
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Box<dyn Error>>> + Send {
         async move {
             info!("Performing mock signature operation");
-            
+
             // Try to parse as Ed25519 key first
             if let Ok(key_pair) = Ed25519KeyPair::from_pkcs8(private_key) {
                 let signature = key_pair.sign(data);
                 info!("Successfully performed mock Ed25519 signing operation");
                 return Ok(signature.as_ref().to_vec());
             }
-            
+
             // If not Ed25519, try RSA
             let mut context = Context::new(&SHA256);
             context.update(data);
             let digest = context.finish();
-            
+
             // Parse the private key as RSA
             let key_pair = RsaKeyPair::from_der(private_key)
                 .map_err(|e| format!("Failed to parse RSA key in mock: {:?}", e))?;
-            
+
             let mut signature = vec![0; key_pair.public().modulus_len()];
             key_pair
-                .sign(&signature::RSA_PKCS1_SHA256, &SystemRandom::new(), digest.as_ref(), &mut signature)
+                .sign(
+                    &signature::RSA_PKCS1_SHA256,
+                    &SystemRandom::new(),
+                    digest.as_ref(),
+                    &mut signature,
+                )
                 .map_err(|e| format!("Mock signing failed: {:?}", e))?;
-            
+
             info!("Successfully performed mock RSA signing operation");
             Ok(signature)
         }
@@ -455,7 +488,11 @@ impl WindowsSSHAgent {
         Ok(())
     }
 
-    pub async fn sign_data(&mut self, public_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    pub async fn sign_data(
+        &mut self,
+        public_key: &[u8],
+        data: &[u8],
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
         // Find the key by its public key
         for key_info in self.list_keys() {
             if let Ok((private_key, stored_public_key)) = self.key_store.get_key(&key_info.key_id) {
@@ -488,7 +525,7 @@ pub struct SSHAgentServer {
 impl SSHAgentServer {
     pub async fn start(&mut self) -> Result<(), Box<dyn Error>> {
         info!("Starting SSH Agent Server");
-        
+
         // Create an async TCP listener
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
@@ -499,10 +536,10 @@ impl SSHAgentServer {
             match listener.accept().await {
                 Ok((socket, peer_addr)) => {
                     info!("New connection from {}", peer_addr);
-                    
+
                     // Clone the required data for the handler
                     let agent = Arc::new(tokio::sync::Mutex::new(self.agent.clone()));
-                    
+
                     // Spawn a new task to handle the connection
                     tokio::spawn(async move {
                         if let Err(e) = Self::handle_connection(socket, agent).await {
@@ -544,7 +581,10 @@ impl SSHAgentServer {
         Ok(())
     }
 
-    async fn process_request(agent: &mut WindowsSSHAgent, data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    async fn process_request(
+        agent: &mut WindowsSSHAgent,
+        data: &[u8],
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
         let message = match SSHAgentMessage::parse(data) {
             Ok(msg) => msg,
             Err(e) => {
@@ -558,10 +598,10 @@ impl SSHAgentServer {
                 // List all identities
                 let keys = agent.list_keys();
                 let mut response = Vec::new();
-                
+
                 // Number of keys (u32 in network byte order)
                 response.extend_from_slice(&(keys.len() as u32).to_be_bytes());
-                
+
                 // Add each key's information
                 for key in keys {
                     if let Ok((_, public_key)) = agent.key_store.get_key(&key.key_id) {
@@ -577,7 +617,10 @@ impl SSHAgentServer {
                     }
                 }
 
-                Ok(SSHAgentMessage::create_response(SSHAgentMessageType::SSHAgentIdentities, response))
+                Ok(SSHAgentMessage::create_response(
+                    SSHAgentMessageType::SSHAgentIdentities,
+                    response,
+                ))
             }
 
             SSHAgentMessageType::SSHAgentSign => {
@@ -606,7 +649,10 @@ impl SSHAgentServer {
                         let mut response = Vec::new();
                         response.extend_from_slice(&(signature.len() as u32).to_be_bytes());
                         response.extend_from_slice(&signature);
-                        Ok(SSHAgentMessage::create_response(SSHAgentMessageType::SSHAgentSuccess, response))
+                        Ok(SSHAgentMessage::create_response(
+                            SSHAgentMessageType::SSHAgentSuccess,
+                            response,
+                        ))
                     }
                     Err(e) => {
                         error!("Signing failed: {}", e);
@@ -626,7 +672,10 @@ impl SSHAgentServer {
             }
 
             _ => {
-                error!("Unsupported SSH agent message type: {:?}", message.message_type);
+                error!(
+                    "Unsupported SSH agent message type: {:?}",
+                    message.message_type
+                );
                 Ok(SSHAgentMessage::create_failure_response())
             }
         }
@@ -640,7 +689,7 @@ impl Clone for WindowsSSHAgent {
         let mut master_key = [0u8; 32];
         rng.fill(&mut master_key)
             .expect("Failed to generate master key for clone");
-        
+
         Self {
             tpm_provider: TPMProviderType::Mock(MockTPMProvider),
             key_store: KeyStore::new(&master_key),
