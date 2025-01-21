@@ -1,5 +1,7 @@
 use crate::key_store::{KeyInfo, KeyStore};
+use async_trait;
 use log::{error, info};
+use parking_lot;
 use ring::{
     digest::{Context, SHA256},
     rand::{SecureRandom, SystemRandom},
@@ -17,8 +19,6 @@ use windows::Win32::Security::Cryptography::{
     BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, BCRYPT_SHA256_ALGORITHM, CERT_OPEN_STORE_FLAGS,
     CERT_QUERY_ENCODING_TYPE, CERT_STORE_PROV_SYSTEM_W,
 };
-use parking_lot;
-use async_trait;
 
 // SSH Agent Protocol Message Types
 #[derive(Debug, Clone, Copy)]
