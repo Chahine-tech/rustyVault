@@ -8,37 +8,17 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     flake-utils.url = "github:numtide/flake-utils";
-    pre-commit-hooks = {
-      url = "github:cachix/pre-commit-hooks.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, ... }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs {
           inherit system overlays;
         };
-
-        # Pre-commit hooks configuration
-        pre-commit = pre-commit-hooks.lib.${system}.run {
-          src = ./.;
-          hooks = {
-            rustfmt.enable = true;
-            clippy.enable = true;
-            cargo-check.enable = true;
-            cargo-test.enable = true;
-          };
-        };
-
       in
       {
-        checks = {
-          pre-commit-check = pre-commit;
-        };
-
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             # Rust toolchain with cross-compilation support
@@ -74,13 +54,6 @@
             nixpkgs-fmt  # Formatter for Nix files
           ];
 
-          inherit (pre-commit) shellHook;
-
-          # Environment variables for development
-          RUST_BACKTRACE = "1";
-          RUST_LOG = "debug";
-          
-          # Additional configuration
           shellHook = ''
             echo "Configuring cross-platform development environment"
             echo "Native target: ${system}"
@@ -140,6 +113,10 @@
             EOF
             fi
           '';
+
+          # Environment variables for development
+          RUST_BACKTRACE = "1";
+          RUST_LOG = "debug";
         };
       });
-} 
+}
