@@ -25,9 +25,18 @@ jobs:
           toolchain: stable
           target: x86_64-pc-windows-msvc
           override: true
+          components: rustfmt, clippy
 
       - name: Setup MSVC target
         run: rustup target add x86_64-pc-windows-msvc
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: |
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo clippy --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings
 
       - name: Build
         run: cargo build --release --target x86_64-pc-windows-msvc

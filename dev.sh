@@ -2,7 +2,7 @@
 
 # Build the development container
 build() {
-    docker build -t rust-tpm-dev:latest -f Dockerfile.dev . --no-cache
+    docker build -t rust-tpm-dev:latest .
 }
 
 # Run an interactive shell in the container
