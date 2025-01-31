@@ -1,9 +1,12 @@
-use azure_security_keyvault::{prelude::SignatureAlgorithm, KeyvaultClient};
-use crate::cloud::{CloudProvider, CloudError};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use crate::cloud::{CloudError, CloudProvider};
 use async_trait::async_trait;
-use ring::{signature::{self, Ed25519KeyPair, RsaKeyPair}, digest::{Context, SHA256}};
+use azure_security_keyvault::{prelude::SignatureAlgorithm, KeyvaultClient};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use ring::rand::SystemRandom;
+use ring::{
+    digest::{Context, SHA256},
+    signature::{self, Ed25519KeyPair, RsaKeyPair},
+};
 
 #[derive(Debug)]
 pub struct AzureKmsProvider {
@@ -15,8 +18,13 @@ impl AzureKmsProvider {
         Self { client }
     }
 
-    pub async fn set_secret(&self, secret_name: &str, secret_value: &str) -> Result<(), CloudError> {
-        self.client.secret_client()
+    pub async fn set_secret(
+        &self,
+        secret_name: &str,
+        secret_value: &str,
+    ) -> Result<(), CloudError> {
+        self.client
+            .secret_client()
             .set(secret_name, secret_value)
             .await
             .map_err(|e| CloudError::StorageError(e.to_string()))?;
@@ -24,7 +32,9 @@ impl AzureKmsProvider {
     }
 
     pub async fn get_secret(&self, secret_name: &str) -> Result<String, CloudError> {
-        let secret = self.client.secret_client()
+        let secret = self
+            .client
+            .secret_client()
             .get(secret_name)
             .await
             .map_err(|e| CloudError::RetrievalError(e.to_string()))?;
@@ -66,32 +76,36 @@ impl CloudProvider for AzureKmsProvider {
     async fn store_key(&self, key: &[u8]) -> Result<String, CloudError> {
         let key_id = format!("key_{}", chrono::Utc::now().timestamp());
         let key_b64 = BASE64.encode(key);
-        
-        self.set_secret(&key_id, &key_b64)
-            .await
-            .map_err(|e| CloudError::StorageError(format!("Failed to store key in Azure Key Vault: {}", e)))?;
+
+        self.set_secret(&key_id, &key_b64).await.map_err(|e| {
+            CloudError::StorageError(format!("Failed to store key in Azure Key Vault: {}", e))
+        })?;
 
         Ok(key_id)
     }
 
     async fn retrieve_key(&self, id: &str) -> Result<Vec<u8>, CloudError> {
-        let key_b64 = self.get_secret(id)
+        let key_b64 = self
+            .get_secret(id)
             .await
             .map_err(|e| CloudError::RetrievalError(e.to_string()))?;
-        BASE64.decode(key_b64)
+        BASE64
+            .decode(key_b64)
             .map_err(|e| CloudError::DecodingError(e.to_string()))
     }
 
     async fn sign_data(&self, key_id: &str, data: &[u8]) -> Result<Vec<u8>, CloudError> {
-        let signature = self.client.key_client()
+        let signature = self
+            .client
+            .key_client()
             .sign(
-                key_id, 
+                key_id,
                 SignatureAlgorithm::RS256, // or appropriate algorithm
-                BASE64.encode(data) // Convert data to base64
+                BASE64.encode(data),       // Convert data to base64
             )
             .await
             .map_err(|e| CloudError::SigningError(e.to_string()))?;
-        
+
         Ok(signature.signature)
     }
 }

@@ -1,7 +1,10 @@
+pub mod cloud;
 pub mod key_store;
 pub mod tpm;
-pub mod cloud;
 
+pub use cloud::{CloudError, CloudProvider, CloudProviderType};
 pub use key_store::{KeyInfo, KeyStore, KeyStoreError};
-pub use tpm::{KeyType, MockTPMProvider, SSHAgentServer, TPMProvider, TPMProviderType, WindowsSSHAgent, WindowsTPMProvider};
-pub use cloud::{CloudProvider, CloudProviderType, CloudError};
+pub use tpm::{
+    KeyType, MockTPMProvider, SSHAgentServer, TPMProvider, TPMProviderType, WindowsSSHAgent,
+    WindowsTPMProvider,
+};

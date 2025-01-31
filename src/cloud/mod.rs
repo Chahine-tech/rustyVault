@@ -1,7 +1,7 @@
 pub mod aws;
-pub mod gcp;
 pub mod azure;
 mod error;
+pub mod gcp;
 
 pub use error::CloudError;
 
@@ -23,6 +23,6 @@ pub trait CloudProvider: Send + Sync {
 #[derive(Debug)]
 pub enum CloudProviderType {
     AWS(aws::AWSProvider),
-    GCP(gcp::KmsProvider), 
+    GCP(gcp::KmsProvider),
     Azure(azure::AzureKmsProvider),
 }
