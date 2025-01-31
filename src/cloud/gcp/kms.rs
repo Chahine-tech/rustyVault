@@ -73,7 +73,6 @@ impl CloudProvider for KmsProvider {
                 version_template: Some(CryptoKeyVersionTemplate {
                     algorithm: CryptoKeyVersionAlgorithm::GoogleSymmetricEncryption as i32,
                     protection_level: ProtectionLevel::Hsm as i32,
-                    ..Default::default()
                 }),
                 ..Default::default()
             }),
