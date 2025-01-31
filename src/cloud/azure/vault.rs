@@ -41,6 +41,7 @@ impl AzureKmsProvider {
         Ok(secret.value)
     }
 
+    #[allow(dead_code)]
     async fn sign_with_key(&self, private_key: &[u8], data: &[u8]) -> Result<Vec<u8>, CloudError> {
         // Try to parse as Ed25519 key first
         if let Ok(key_pair) = Ed25519KeyPair::from_pkcs8(private_key) {
@@ -95,17 +96,22 @@ impl CloudProvider for AzureKmsProvider {
     }
 
     async fn sign_data(&self, key_id: &str, data: &[u8]) -> Result<Vec<u8>, CloudError> {
-        let signature = self
+        // Try it first with Azure Key Vault
+        match self
             .client
             .key_client()
-            .sign(
-                key_id,
-                SignatureAlgorithm::RS256, // or appropriate algorithm
-                BASE64.encode(data),       // Convert data to base64
-            )
+            .sign(key_id, SignatureAlgorithm::RS256, BASE64.encode(data))
             .await
-            .map_err(|e| CloudError::SigningError(e.to_string()))?;
-
-        Ok(signature.signature)
+        {
+            Ok(signature) => Ok(signature.signature),
+            Err(_) => {
+                // If this fails, try the local method
+                let key = self.get_secret(key_id).await?;
+                let key_bytes = BASE64
+                    .decode(key)
+                    .map_err(|e| CloudError::DecodingError(e.to_string()))?;
+                self.sign_with_key(&key_bytes, data).await
+            }
+        }
     }
 }

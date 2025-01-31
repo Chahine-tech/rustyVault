@@ -39,6 +39,7 @@ impl KmsProvider {
         Ok(response.ciphertext)
     }
 
+    #[allow(dead_code)]
     async fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, CloudError> {
         let ciphertext_crc32c = crc32c(ciphertext) as i64;
         let request = DecryptRequest {
@@ -107,7 +108,13 @@ impl CloudProvider for KmsProvider {
             .decode(encrypted_key)
             .map_err(|e| CloudError::DecodingError(e.to_string()))?;
 
-        self.decrypt(&encrypted_key).await
+        match self.decrypt(&encrypted_key).await {
+            Ok(key) => Ok(key),
+            Err(e) => Err(CloudError::RetrievalError(format!(
+                "Failed to decrypt key: {}",
+                e
+            ))),
+        }
     }
 
     async fn sign_data(&self, key_id: &str, data: &[u8]) -> Result<Vec<u8>, CloudError> {

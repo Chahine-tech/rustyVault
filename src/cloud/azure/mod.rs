@@ -1,3 +1,3 @@
-mod kms;
+mod vault;
 
-pub use kms::AzureKmsProvider;
+pub use vault::AzureKmsProvider;
