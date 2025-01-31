@@ -47,7 +47,7 @@ jobs:
         run: cargo test --target x86_64-pc-windows-msvc --all -- --nocapture
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: windows-ssh-agent
           path: target/x86_64-pc-windows-msvc/release/agent.exe
