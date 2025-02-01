@@ -5,13 +5,13 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use windows_ssh_agent::{CloudError, CloudProvider};
 
-// Structure Mock pour simuler le stockage
+// Mock key storage for testing purposes
 #[derive(Debug, Default)]
 struct MockKeyStore {
     keys: HashMap<String, Vec<u8>>,
 }
 
-// Mock pour AWS
+// AWS Provider Mock Implementation
 #[derive(Debug, Default)]
 struct MockAWSProvider {
     store: Arc<Mutex<MockKeyStore>>,
@@ -36,12 +36,12 @@ impl CloudProvider for MockAWSProvider {
     }
 
     async fn sign_data(&self, _key_id: &str, data: &[u8]) -> Result<Vec<u8>, CloudError> {
-        // Simuler une signature simple pour les tests
+        // Simple bitwise NOT signature simulation
         Ok(data.iter().map(|b| !b).collect())
     }
 }
 
-// Mock pour Azure
+// Azure Provider Mock Implementation
 #[derive(Debug, Default)]
 struct MockAzureProvider {
     store: Arc<Mutex<MockKeyStore>>,
@@ -66,12 +66,12 @@ impl CloudProvider for MockAzureProvider {
     }
 
     async fn sign_data(&self, _key_id: &str, data: &[u8]) -> Result<Vec<u8>, CloudError> {
-        // Simuler une signature simple pour les tests
+        // Base64 encoded data simulation
         Ok(BASE64.encode(data).into_bytes())
     }
 }
 
-// Mock pour GCP
+// GCP Provider Mock Implementation
 #[derive(Debug, Default)]
 struct MockGCPProvider {
     store: Arc<Mutex<MockKeyStore>>,
@@ -96,30 +96,30 @@ impl CloudProvider for MockGCPProvider {
     }
 
     async fn sign_data(&self, _key_id: &str, data: &[u8]) -> Result<Vec<u8>, CloudError> {
-        // Simuler une signature simple pour les tests
+        // Double data simulation
         Ok(data.repeat(2))
     }
 }
 
-// Tests
+// Test Suite
 #[tokio::test]
 async fn test_aws_provider() -> Result<(), Box<dyn std::error::Error>> {
     let provider = MockAWSProvider::default();
 
-    // Test key storage and retrieval
+    // Test key lifecycle operations
     let test_key = b"test_aws_key";
     let key_id = provider.store_key(test_key).await?;
     let retrieved_key = provider.retrieve_key(&key_id).await?;
     assert_eq!(test_key.to_vec(), retrieved_key);
 
-    // Test signing
+    // Test signature generation
     let test_data = b"test_data";
     let signature = provider.sign_data(&key_id, test_data).await?;
-    assert!(!signature.is_empty());
+    assert!(!signature.is_empty(), "Signature should not be empty");
 
-    // Test error case
+    // Test error handling for non-existent key
     let result = provider.retrieve_key("nonexistent_key").await;
-    assert!(result.is_err());
+    assert!(result.is_err(), "Should return error for non-existent key");
 
     Ok(())
 }
@@ -128,20 +128,20 @@ async fn test_aws_provider() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_azure_provider() -> Result<(), Box<dyn std::error::Error>> {
     let provider = MockAzureProvider::default();
 
-    // Test key storage and retrieval
+    // Validate key storage and retrieval
     let test_key = b"test_azure_key";
     let key_id = provider.store_key(test_key).await?;
     let retrieved_key = provider.retrieve_key(&key_id).await?;
     assert_eq!(test_key.to_vec(), retrieved_key);
 
-    // Test signing
+    // Verify signature format
     let test_data = b"test_data";
     let signature = provider.sign_data(&key_id, test_data).await?;
-    assert!(!signature.is_empty());
+    assert!(!signature.is_empty(), "Azure signature should not be empty");
 
-    // Test error case
+    // Validate error case
     let result = provider.retrieve_key("nonexistent_key").await;
-    assert!(result.is_err());
+    assert!(result.is_err(), "Azure should error on missing key");
 
     Ok(())
 }
@@ -150,40 +150,50 @@ async fn test_azure_provider() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_gcp_provider() -> Result<(), Box<dyn std::error::Error>> {
     let provider = MockGCPProvider::default();
 
-    // Test key storage and retrieval
+    // Test basic operations
     let test_key = b"test_gcp_key";
     let key_id = provider.store_key(test_key).await?;
     let retrieved_key = provider.retrieve_key(&key_id).await?;
     assert_eq!(test_key.to_vec(), retrieved_key);
 
-    // Test signing
+    // Check signature format
     let test_data = b"test_data";
     let signature = provider.sign_data(&key_id, test_data).await?;
-    assert!(!signature.is_empty());
+    assert_eq!(
+        signature,
+        test_data.repeat(2),
+        "GCP signature should be doubled data"
+    );
 
-    // Test error case
+    // Test error scenario
     let result = provider.retrieve_key("nonexistent_key").await;
-    assert!(result.is_err());
+    assert!(result.is_err(), "GCP should return error for missing key");
 
     Ok(())
 }
 
-// Test des cas d'erreur spécifiques
+// Error Case Validation
 #[tokio::test]
 async fn test_error_cases() -> Result<(), Box<dyn std::error::Error>> {
     let provider = MockAWSProvider::default();
 
-    // Test avec une clé invalide
+    // Test invalid key retrieval
     let result = provider.retrieve_key("invalid_key").await;
-    assert!(matches!(result, Err(CloudError::RetrievalError(_))));
+    assert!(
+        matches!(result, Err(CloudError::RetrievalError(_))),
+        "Should return RetrievalError type"
+    );
 
-    // Test avec des données vides
+    // Test empty key storage
     let result = provider.store_key(&[]).await;
-    assert!(result.is_ok()); // Devrait accepter une clé vide
+    assert!(result.is_ok(), "Should accept empty keys for storage");
 
-    // Test de signature avec une clé invalide
+    // Test signature with invalid key (mock doesn't validate keys)
     let result = provider.sign_data("invalid_key", b"test_data").await;
-    assert!(!result.is_err()); // Notre mock ne vérifie pas la validité de la clé pour la signature
+    assert!(
+        result.is_ok(),
+        "Mock implementation should accept any key ID"
+    );
 
     Ok(())
 }
