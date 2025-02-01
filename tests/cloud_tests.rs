@@ -1,9 +1,9 @@
-use windows_ssh_agent::{CloudProvider, CloudError};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use windows_ssh_agent::{CloudError, CloudProvider};
 
 // Structure Mock pour simuler le stockage
 #[derive(Debug, Default)]
@@ -105,7 +105,7 @@ impl CloudProvider for MockGCPProvider {
 #[tokio::test]
 async fn test_aws_provider() -> Result<(), Box<dyn std::error::Error>> {
     let provider = MockAWSProvider::default();
-    
+
     // Test key storage and retrieval
     let test_key = b"test_aws_key";
     let key_id = provider.store_key(test_key).await?;
@@ -116,7 +116,7 @@ async fn test_aws_provider() -> Result<(), Box<dyn std::error::Error>> {
     let test_data = b"test_data";
     let signature = provider.sign_data(&key_id, test_data).await?;
     assert!(!signature.is_empty());
-    
+
     // Test error case
     let result = provider.retrieve_key("nonexistent_key").await;
     assert!(result.is_err());
@@ -127,7 +127,7 @@ async fn test_aws_provider() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::test]
 async fn test_azure_provider() -> Result<(), Box<dyn std::error::Error>> {
     let provider = MockAzureProvider::default();
-    
+
     // Test key storage and retrieval
     let test_key = b"test_azure_key";
     let key_id = provider.store_key(test_key).await?;
@@ -138,7 +138,7 @@ async fn test_azure_provider() -> Result<(), Box<dyn std::error::Error>> {
     let test_data = b"test_data";
     let signature = provider.sign_data(&key_id, test_data).await?;
     assert!(!signature.is_empty());
-    
+
     // Test error case
     let result = provider.retrieve_key("nonexistent_key").await;
     assert!(result.is_err());
@@ -149,7 +149,7 @@ async fn test_azure_provider() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::test]
 async fn test_gcp_provider() -> Result<(), Box<dyn std::error::Error>> {
     let provider = MockGCPProvider::default();
-    
+
     // Test key storage and retrieval
     let test_key = b"test_gcp_key";
     let key_id = provider.store_key(test_key).await?;
@@ -160,7 +160,7 @@ async fn test_gcp_provider() -> Result<(), Box<dyn std::error::Error>> {
     let test_data = b"test_data";
     let signature = provider.sign_data(&key_id, test_data).await?;
     assert!(!signature.is_empty());
-    
+
     // Test error case
     let result = provider.retrieve_key("nonexistent_key").await;
     assert!(result.is_err());
@@ -186,4 +186,4 @@ async fn test_error_cases() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!result.is_err()); // Notre mock ne vérifie pas la validité de la clé pour la signature
 
     Ok(())
-} 
+}
